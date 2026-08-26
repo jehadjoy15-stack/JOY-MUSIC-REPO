@@ -1,0 +1,250 @@
+syntax = "proto3";
+
+package listentogether;
+
+option go_package = "github.com/nyxiereal/metroserver/proto";
+option java_package = "com.joymusic.music.listentogether.proto";
+option java_outer_classname = "Listentogether";
+option java_multiple_files = false;
+
+// Message envelope with type and payload
+message Envelope {
+  string type = 1;
+  bytes payload = 2;
+  bool compressed = 3;  // Indicates if payload is gzip compressed
+}
+
+message ClientCapabilities {
+  bool supportsProtobuf = 1;
+  bool supportsCompression = 2;
+  string clientVersion = 3;
+}
+
+message ServerCapabilities {
+  bool supportsProtobuf = 1;
+  bool supportsCompression = 2;
+  string serverVersion = 3;
+}
+
+message TrackInfo {
+  string id = 1;
+  string title = 2;
+  string artist = 3;
+  string album = 4;
+  int64 duration = 5;
+  string thumbnail = 6;
+  string suggestedBy = 7;
+}
+
+message UserInfo {
+  string userId = 1;
+  string username = 2;
+  bool isHost = 3;
+  bool isConnected = 4;
+}
+
+message RoomState {
+  string roomCode = 1;
+  string hostId = 2;
+  repeated UserInfo users = 3;
+  TrackInfo currentTrack = 4;
+  bool isPlaying = 5;
+  int64 position = 6;
+  int64 lastUpdate = 7;
+  float volume = 8;
+  repeated TrackInfo queue = 9;
+  int64 revision = 10;
+}
+
+message CreateRoomPayload {
+  string username = 1;
+}
+
+message JoinRoomPayload {
+  string roomCode = 1;
+  string username = 2;
+}
+
+message RoomCreatedPayload {
+  string roomCode = 1;
+  string userId = 2;
+  string sessionToken = 3;
+  RoomState roomState = 4;
+}
+
+message JoinedRoomPayload {
+  string sessionToken = 1;
+  RoomState roomState = 2;
+}
+
+message UserJoinedPayload {
+  string userId = 1;
+  string username = 2;
+  UserInfo user = 3;
+}
+
+message UserLeftPayload {
+  string userId = 1;
+  string username = 2;
+  string reason = 3;
+}
+
+message ReconnectPayload {
+  string sessionToken = 1;
+  string roomCode = 2;
+}
+
+message ApproveJoinPayload {
+  string userId = 1;
+}
+
+message RejectJoinPayload {
+  string userId = 1;
+  string reason = 2;
+}
+
+message PlaybackActionPayload {
+  string action = 1;
+  string trackId = 2;
+  int64 position = 3;
+  TrackInfo trackInfo = 4;
+  bool insertNext = 5;
+  repeated TrackInfo queue = 6;
+  string queueTitle = 7;
+  float volume = 8;
+  int64 serverTime = 9;
+  int64 revision = 10;
+  int64 capturedAtServerTime = 11;
+}
+
+message PingPayload {
+  int64 clientTime = 1;
+  int64 sequence = 2;
+}
+
+message PongPayload {
+  int64 clientTime = 1;
+  int64 serverTime = 2;
+  int64 sequence = 3;
+  int64 serverReceiveTime = 4;
+  int64 serverSendTime = 5;
+}
+
+message BufferReadyPayload {
+  string trackId = 1;
+}
+
+message KickUserPayload {
+  string userId = 1;
+  string reason = 2;
+}
+
+message UserKickedPayload {
+  string userId = 1;
+  string reason = 2;
+}
+
+message TransferHostPayload {
+  string newHostId = 1;
+}
+
+message HostTransferredPayload {
+  string oldHostId = 1;
+  string newHostId = 2;
+}
+
+message ErrorPayload {
+  string message = 1;
+  string code = 2;
+}
+
+message SuggestTrackPayload {
+  TrackInfo trackInfo = 1;
+}
+
+message ApproveSuggestionPayload {
+  string suggestionId = 1;
+}
+
+message RejectSuggestionPayload {
+  string suggestionId = 1;
+  string reason = 2;
+}
+
+message JoinRequestPayload {
+  string userId = 1;
+  string username = 2;
+}
+
+message JoinApprovedPayload {
+  string roomCode = 1;
+  string userId = 2;
+  string sessionToken = 3;
+  RoomState state = 4;
+}
+
+message JoinRejectedPayload {
+  string reason = 1;
+}
+
+message BufferWaitPayload {
+  string trackId = 1;
+  repeated string waitingFor = 2;
+}
+
+message BufferCompletePayload {
+  string trackId = 1;
+}
+
+message HostChangedPayload {
+  string newHostId = 1;
+  string newHostName = 2;
+}
+
+message KickedPayload {
+  string reason = 1;
+}
+
+message SyncStatePayload {
+  TrackInfo currentTrack = 1;
+  bool isPlaying = 2;
+  int64 position = 3;
+  int64 lastUpdate = 4;
+  repeated TrackInfo queue = 5;
+  float volume = 6;
+  int64 revision = 7;
+}
+
+message ReconnectedPayload {
+  string roomCode = 1;
+  string userId = 2;
+  RoomState state = 3;
+  bool isHost = 4;
+}
+
+message UserReconnectedPayload {
+  string userId = 1;
+  string username = 2;
+}
+
+message UserDisconnectedPayload {
+  string userId = 1;
+  string username = 2;
+}
+
+message SuggestionReceivedPayload {
+  string suggestionId = 1;
+  string fromUserId = 2;
+  string fromUsername = 3;
+  TrackInfo trackInfo = 4;
+}
+
+message SuggestionApprovedPayload {
+  string suggestionId = 1;
+  TrackInfo trackInfo = 2;
+}
+
+message SuggestionRejectedPayload {
+  string suggestionId = 1;
+  string reason = 2;
+}
