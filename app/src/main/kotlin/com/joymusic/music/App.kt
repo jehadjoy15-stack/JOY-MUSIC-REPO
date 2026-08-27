@@ -32,6 +32,7 @@ import com.joymusic.music.constants.*
 import com.joymusic.music.di.ApplicationScope
 import com.joymusic.music.extensions.toEnum
 import com.joymusic.music.extensions.toInetSocketAddress
+import com.joymusic.music.discord.DiscordRpcManager
 import com.joymusic.music.utils.CrashHandler
 import com.joymusic.music.utils.ArtistNameAliases
 import com.joymusic.music.utils.YTPlayerUtils
@@ -94,6 +95,11 @@ class App :
 
         // Initialize cipher deobfuscator for WEB_REMIX streaming
         CipherDeobfuscator.initialize(this)
+
+        // Pre-initialize Discord RPC manager so connection is established before the first song plays
+        runCatching {
+            DiscordRpcManager.init(this)
+        }
 
         // Pre-read Coil cache size on background to avoid runBlocking in newImageLoader
         applicationScope.launch(Dispatchers.IO) {
