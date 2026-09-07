@@ -17,7 +17,7 @@ object DiscordExternalAssets {
     private const val PROXY_WORKER_URL =
         "https://metrolist-discord-rpc-api.fullerbread2032.workers.dev/image"
     private const val EXTERNAL_ASSETS_API =
-        "https://discord.com/api/v9/applications/%s/external-assets"
+        "https://discord.com/api/v10/applications/%s/external-assets"
 
     private val cache = ConcurrentHashMap<String, String>()
     private const val CACHE_MAX_SIZE = 128

@@ -3584,13 +3584,16 @@ class MusicService :
         Timber.tag("DiscordSvc").i("updateDiscordRPC: title=%s, isPlaying=%s", metadata.title, isPlaying)
 
         // ExoPlayer must be accessed on the main thread
-        val (currentPosition, speed) = withContext(Dispatchers.Main.immediate) {
-            player.currentPosition to player.playbackParameters.speed
+        val (currentPosition, speed, playerDuration) = withContext(Dispatchers.Main.immediate) {
+            val dur = player.duration
+            val validDur = if (dur > 0L && dur != androidx.media3.common.C.TIME_UNSET) dur else null
+            Triple(player.currentPosition, player.playbackParameters.speed, validDur)
         }
         val adjustedTime = (currentPosition / speed).toLong()
         val now = System.currentTimeMillis()
         val startTime = if (isPlaying) now - adjustedTime else 0L
-        val durationMs = (song?.song?.duration ?: metadata.duration).takeIf { it > 0 }?.times(1000L)
+        val durationMs = playerDuration
+            ?: (song?.song?.duration ?: metadata.duration).takeIf { it > 0 }?.times(1000L)
         val remainingMs = durationMs?.minus(currentPosition)?.coerceAtLeast(0L)
         val adjustedRemainingMs = remainingMs?.let { (it / speed).toLong() }
         val endTime = if (isPlaying && adjustedRemainingMs != null) now + adjustedRemainingMs else null

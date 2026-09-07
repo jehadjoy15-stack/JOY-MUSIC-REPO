@@ -368,21 +368,14 @@ class DiscordGateway(
             }
             is ReconnectAction.Resume,
             is ReconnectAction.ReIdentify -> {
-                if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-                    Timber.tag(TAG).w("max reconnect attempts reached (%d), giving up", MAX_RECONNECT_ATTEMPTS)
-                    _events.emit(
-                        GatewayEvent.Disconnected(4000, "max reconnect attempts", remote = false),
-                    )
-                    return
-                }
-                reconnectAttempts++
+                val attempt = reconnectAttempts++
                 val delay = if (code == 429) {
                     val retryAfter = parseRetryAfter(reason)
                     retryAfter.coerceAtLeast(60_000L)
                 } else {
-                    reconnectDelayMs(reconnectAttempts)
+                    reconnectDelayMs(attempt.coerceAtMost(6))
                 }
-                Timber.tag(TAG).i("handleClose: reconnecting in %dms (attempt %d, code=%d)", delay, reconnectAttempts, code)
+                Timber.tag(TAG).i("handleClose: reconnecting in %dms (attempt %d, code=%d)", delay, attempt, code)
                 delay(delay)
                 performReconnect(action)
             }

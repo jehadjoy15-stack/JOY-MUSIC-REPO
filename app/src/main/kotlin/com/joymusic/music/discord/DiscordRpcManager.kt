@@ -97,6 +97,10 @@ object DiscordRpcManager {
         if (lastActivity == null) {
             return false
         }
+        // If the last activity was sent without an endTime (e.g. during initial loading), allow re-syncing once duration is known
+        if (lastActivity?.endMs == null) {
+            return false
+        }
         // If the last activity had images to resolve but none were sent,
         // and no resolution is in progress, allow the caller to retry.
         if (currentActivityHadImages &&
@@ -372,7 +376,8 @@ object DiscordRpcManager {
 
         val stateChanged = songId != currentSongId || isPlaying != currentIsPlaying ||
             (activity.largeImage != null && activity.largeImage != lastActivity?.largeImage) ||
-            (activity.smallImage != null && activity.smallImage != lastActivity?.smallImage)
+            (activity.smallImage != null && activity.smallImage != lastActivity?.smallImage) ||
+            (activity.endTimestamp != null && lastActivity?.endMs == null)
 
         val now = System.currentTimeMillis()
         if (!stateChanged &&
