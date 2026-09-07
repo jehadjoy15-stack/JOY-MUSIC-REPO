@@ -2530,6 +2530,9 @@ class MusicService :
 
         setupAudioNormalization()
 
+        currentMediaMetadata.value = newMetadata ?: player.currentMetadata
+        syncDiscordState()
+
         scrobbleManager?.onSongStop()
         if (player.playWhenReady && player.playbackState == Player.STATE_READY) {
             scrobbleManager?.onSongStart(player.currentMetadata, duration = player.duration)
@@ -2741,7 +2744,7 @@ class MusicService :
                 closeAudioEffectSession()
             }
         }
-        if (events.containsAny(EVENT_TIMELINE_CHANGED, EVENT_POSITION_DISCONTINUITY)) {
+        if (events.containsAny(EVENT_TIMELINE_CHANGED, EVENT_POSITION_DISCONTINUITY, Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_MEDIA_METADATA_CHANGED)) {
             currentMediaMetadata.value = player.currentMetadata
         }
 
@@ -2768,6 +2771,7 @@ class MusicService :
                 Player.EVENT_IS_PLAYING_CHANGED,
                 Player.EVENT_PLAYBACK_STATE_CHANGED,
                 Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                Player.EVENT_MEDIA_METADATA_CHANGED,
             )
         ) {
             syncDiscordState()
@@ -3513,55 +3517,57 @@ class MusicService :
     private fun syncDiscordState() {
         if (!discordRpcEnabled) return
 
-        if (!player.isPlaying) {
-            Timber.tag("DiscordSvc").d("syncDiscordState: paused, clearing presence immediately")
-            DiscordRpcManager.clear()
-            return
-        }
+        scope.launch(Dispatchers.Main.immediate) {
+            val isPlaying = player.isPlaying
+            val playWhenReady = player.playWhenReady
+            val playbackState = player.playbackState
+            val isBufferingOrPlaying = isPlaying || (playWhenReady && (playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_READY))
 
-        val songId = player.currentMetadata?.id
-        if (songId == null) {
-            Timber.tag("DiscordSvc").d("syncDiscordState: no song, clearing presence")
-            DiscordRpcManager.clear()
-            return
-        }
-
-        if (!DiscordRpcManager.isReady()) {
-            if (discordIntentionalDisconnect) {
-                Timber.tag("DiscordSvc").d("syncDiscordState: not ready, skipping (intentional disconnect)")
-                return
-            }
-            val token = DiscordRpcManager.getAccessToken()
-            val now = System.currentTimeMillis()
-            if (token != null && (now - lastDiscordReconnectAttemptAtMs) > 30_000L) {
-                lastDiscordReconnectAttemptAtMs = now
-                Timber.tag("DiscordSvc").i("syncDiscordState: not ready, attempting reconnect")
-                scope.launch(Dispatchers.IO) {
-                    if (!DiscordRpcManager.isInitialized()) {
-                        DiscordRpcManager.init(this@MusicService)
-                    }
-                    DiscordRpcManager.reconnectWithToken(token)
-                }
-            }
-            return
-        }
-
-        val isPlaying = player.isPlaying
-        if (DiscordRpcManager.isShowingSong(songId, isPlaying)) {
-            Timber.tag("DiscordSvc").d("syncDiscordState: dedup, already showing songId=%s isPlaying=%s", songId, isPlaying)
-            return
-        }
-
-        scope.launch(Dispatchers.IO) {
-            val (freshMetadata, freshIsPlaying) = withContext(Dispatchers.Main.immediate) {
-                player.currentMetadata to player.isPlaying
-            }
-            if (freshMetadata == null || !freshIsPlaying) {
+            if (!isPlaying && !isBufferingOrPlaying) {
+                Timber.tag("DiscordSvc").d("syncDiscordState: paused/stopped, clearing presence immediately")
                 DiscordRpcManager.clear()
                 return@launch
             }
-            val song = database.song(freshMetadata.id).first()
-            updateDiscordRPC(freshMetadata, song, freshIsPlaying)
+
+            val metadata = player.currentMetadata ?: currentMediaMetadata.value
+            val songId = metadata?.id
+            if (songId == null) {
+                if (!isBufferingOrPlaying) {
+                    Timber.tag("DiscordSvc").d("syncDiscordState: no song, clearing presence")
+                    DiscordRpcManager.clear()
+                }
+                return@launch
+            }
+
+            if (!DiscordRpcManager.isReady()) {
+                if (discordIntentionalDisconnect) {
+                    Timber.tag("DiscordSvc").d("syncDiscordState: not ready, skipping (intentional disconnect)")
+                    return@launch
+                }
+                val token = DiscordRpcManager.getAccessToken()
+                val now = System.currentTimeMillis()
+                if (token != null && (now - lastDiscordReconnectAttemptAtMs) > 10_000L) {
+                    lastDiscordReconnectAttemptAtMs = now
+                    Timber.tag("DiscordSvc").i("syncDiscordState: not ready, attempting reconnect")
+                    launch(Dispatchers.IO) {
+                        if (!DiscordRpcManager.isInitialized()) {
+                            DiscordRpcManager.init(this@MusicService)
+                        }
+                        DiscordRpcManager.reconnectWithToken(token)
+                    }
+                }
+                return@launch
+            }
+
+            if (DiscordRpcManager.isShowingSong(songId, isPlaying)) {
+                Timber.tag("DiscordSvc").d("syncDiscordState: dedup, already showing songId=%s isPlaying=%s", songId, isPlaying)
+                return@launch
+            }
+
+            launch(Dispatchers.IO) {
+                val song = database.song(songId).first()
+                updateDiscordRPC(metadata, song, isPlaying)
+            }
         }
     }
 

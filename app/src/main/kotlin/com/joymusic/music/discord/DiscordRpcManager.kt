@@ -680,6 +680,7 @@ object DiscordRpcManager {
                 _ready = true
                 _authorized = true
                 currentSongId = null
+                currentIsPlaying = false
                 lastActivity = null
                 _connectionStatus.value = Status.Connected
                 _lastError.value = null
@@ -697,6 +698,7 @@ object DiscordRpcManager {
                 _ready = true
                 _authorized = true
                 currentSongId = null
+                currentIsPlaying = false
                 lastActivity = null
                 _connectionStatus.value = Status.Connected
                 _lastError.value = null
