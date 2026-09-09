@@ -3529,7 +3529,20 @@ class MusicService :
                 return@launch
             }
 
-            val metadata = player.currentMetadata ?: currentMediaMetadata.value
+            val metadata = player.currentMetadata
+                ?: currentMediaMetadata.value
+                ?: player.currentMediaItem?.metadata
+                ?: player.currentMediaItem?.let { item ->
+                    val title = item.mediaMetadata.title?.toString()?.takeIf { it.isNotBlank() } ?: "Playing"
+                    val artist = item.mediaMetadata.artist?.toString()?.takeIf { it.isNotBlank() } ?: DiscordDefaults.UNKNOWN_ARTIST
+                    com.joymusic.music.models.MediaMetadata(
+                        id = item.mediaId,
+                        title = title,
+                        artists = listOf(com.joymusic.music.models.MediaMetadata.Artist(id = null, name = artist)),
+                        duration = 0,
+                        thumbnailUrl = item.mediaMetadata.artworkUri?.toString(),
+                    )
+                }
             val songId = metadata?.id
             if (songId == null) {
                 if (!isBufferingOrPlaying) {

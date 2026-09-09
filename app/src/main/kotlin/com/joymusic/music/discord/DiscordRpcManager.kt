@@ -427,8 +427,6 @@ object DiscordRpcManager {
             buttons = buttons,
         )
 
-        lastActivity = initialPayload
-
         try {
             val presenceJson = DiscordPresence.buildPresenceUpdate(
                 status = status,
@@ -437,10 +435,15 @@ object DiscordRpcManager {
             Timber.tag(TAG).i("setActivity: sending (type=%d, name=%s, details=%s, state=%s, songId=%s, largeImage=%s)",
                 activity.activityType, activity.name, activity.details, activity.state, songId, initialLargeResolved)
             gateway.presenceUpdate(presenceJson)
+            lastActivity = initialPayload
         } catch (e: IllegalStateException) {
             Timber.tag(TAG).w(e, "setActivity: gateway not open")
+            currentSongId = null
+            lastActivity = null
         } catch (e: Throwable) {
             Timber.tag(TAG).e(e, "setActivity: send failed")
+            currentSongId = null
+            lastActivity = null
         }
 
         val currentToken = accessToken
