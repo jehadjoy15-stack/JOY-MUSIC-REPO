@@ -1504,7 +1504,7 @@ fun ListenTogetherDialog(
                 item { Spacer(modifier = Modifier.height(16.dp)) }
 
                 // Connected users - horizontal layout
-                val connectedUsers = room.users.filter { it.isConnected }
+                val connectedUsers = room.usersList.filter { it.isConnected }
 
                 item {
                     Column(

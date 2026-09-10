@@ -23,6 +23,7 @@ import androidx.core.content.getSystemService
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.google.protobuf.MessageLite
 import com.joymusic.music.R
 import com.joymusic.music.constants.ListenTogetherAutoApprovalKey
 import com.joymusic.music.constants.ListenTogetherAutoApproveSuggestionsKey
@@ -680,13 +681,6 @@ class ListenTogetherClient
                 return
             }
 
-            try {
-                webSocket?.close(1000, "Starting new connection")
-            } catch (e: Exception) {
-                // Ignore
-            }
-            webSocket = null
-
             _connectionState.value = ConnectionState.CONNECTING
             serverClock.reset()
             evaluateBackgroundDisconnectPolicy("connect")
@@ -867,7 +861,7 @@ class ListenTogetherClient
                 wakeLock =
                     powerManager?.newWakeLock(
                         PowerManager.PARTIAL_WAKE_LOCK,
-                        "JOY MUSIC:ListenTogether",
+                        "Metrolist:ListenTogether",
                     )
             }
             // Always release before acquiring so that the timeout is reset on each call.
@@ -949,7 +943,7 @@ class ListenTogetherClient
             val builder =
                 NotificationCompat
                     .Builder(context, NOTIFICATION_CHANNEL_ID)
-                    .setSmallIcon(R.drawable.small_icon)
+                    .setSmallIcon(R.drawable.share)
                     .setContentTitle(context.getString(R.string.listen_together))
                     .setContentText(content)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -1002,7 +996,7 @@ class ListenTogetherClient
             val builder =
                 NotificationCompat
                     .Builder(context, NOTIFICATION_CHANNEL_ID)
-                    .setSmallIcon(R.drawable.small_icon)
+                    .setSmallIcon(R.drawable.share)
                     .setContentTitle(context.getString(R.string.listen_together))
                     .setContentText(content)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -1285,8 +1279,8 @@ class ListenTogetherClient
                                 _roomState.value =
                                     _roomState.value?.copy(
                                         isPlaying = true,
-                                     position = payload.position ?: _roomState.value!!.position,
-                                        lastUpdate = payload.serverTime ?: _roomState.value!!.lastUpdate,
+                                        position = payload.positionOrNull ?: _roomState.value!!.position,
+                                        lastUpdate = payload.serverTimeOrNull ?: _roomState.value!!.lastUpdate,
                                         revision = maxOf(_roomState.value!!.revision, payload.revision),
                                     )
                             }
@@ -1295,8 +1289,8 @@ class ListenTogetherClient
                                 _roomState.value =
                                     _roomState.value?.copy(
                                         isPlaying = false,
-                                        position = payload.position ?: _roomState.value!!.position,
-                                        lastUpdate = payload.serverTime ?: _roomState.value!!.lastUpdate,
+                                        position = payload.positionOrNull ?: _roomState.value!!.position,
+                                        lastUpdate = payload.serverTimeOrNull ?: _roomState.value!!.lastUpdate,
                                         revision = maxOf(_roomState.value!!.revision, payload.revision),
                                     )
                             }
@@ -1304,8 +1298,8 @@ class ListenTogetherClient
                             PlaybackActions.SEEK -> {
                                 _roomState.value =
                                     _roomState.value?.copy(
-                                        position = payload.position ?: _roomState.value!!.position,
-                                        lastUpdate = payload.serverTime ?: _roomState.value!!.lastUpdate,
+                                        position = payload.positionOrNull ?: _roomState.value!!.position,
+                                        lastUpdate = payload.serverTimeOrNull ?: _roomState.value!!.lastUpdate,
                                         revision = maxOf(_roomState.value!!.revision, payload.revision),
                                     )
                             }
@@ -1313,17 +1307,17 @@ class ListenTogetherClient
                             PlaybackActions.CHANGE_TRACK -> {
                                 _roomState.value =
                                     _roomState.value?.copy(
-                                        currentTrack = payload.trackInfo,
+                                        currentTrack = payload.trackInfoOrNull,
                                         isPlaying = false,
                                         position = 0,
-                                        lastUpdate = payload.serverTime ?: _roomState.value!!.lastUpdate,
+                                        lastUpdate = payload.serverTimeOrNull ?: _roomState.value!!.lastUpdate,
                                         queue = if (payload.revision > 0L) payload.queue.orEmpty() else _roomState.value!!.queue,
                                         revision = maxOf(_roomState.value!!.revision, payload.revision),
                                     )
                             }
 
                             PlaybackActions.QUEUE_ADD -> {
-                                val ti = payload.trackInfo
+                                val ti = payload.trackInfoOrNull
                                 if (ti != null) {
                                     val currentQueue = _roomState.value?.queue ?: emptyList()
                                     _roomState.value =
@@ -1341,7 +1335,7 @@ class ListenTogetherClient
                             }
 
                             PlaybackActions.QUEUE_REMOVE -> {
-                                val id = payload.trackId
+                                val id = payload.trackIdOrNull
                                 if (!id.isNullOrEmpty()) {
                                     val currentQueue = _roomState.value?.queue ?: emptyList()
                                     _roomState.value =
@@ -1363,7 +1357,7 @@ class ListenTogetherClient
                             }
 
                             PlaybackActions.SET_VOLUME -> {
-                                val vol = payload.volume
+                                val vol = payload.volumeOrNull
                                 if (vol != null) {
                                     _roomState.value = _roomState.value?.copy(volume = vol.coerceIn(0f, 1f))
                                 }
@@ -1400,11 +1394,11 @@ class ListenTogetherClient
                         }
                         _roomState.value =
                             _roomState.value?.copy(
-                                currentTrack = payload.currentTrack,
+                                currentTrack = payload.currentTrackOrNull,
                                 isPlaying = payload.isPlaying,
                                 position = payload.position,
                                 lastUpdate = payload.lastUpdate,
-                                volume = payload.volume ?: _roomState.value!!.volume,
+                                volume = payload.volume,
                                 queue = payload.queue ?: _roomState.value!!.queue,
                                 revision = maxOf(_roomState.value!!.revision, payload.revision),
                             )
@@ -1458,7 +1452,7 @@ class ListenTogetherClient
 
                     MessageTypes.SUGGESTION_REJECTED -> {
                         val payload = codec.decodePayload(msgType, payloadBytes) as? SuggestionRejectedPayload ?: return
-                        log(LogLevel.WARNING, "Suggestion rejected", payload.reason ?: "")
+                        log(LogLevel.WARNING, "Suggestion rejected", payload.reasonOrNull.orEmpty())
 
                         // Dismiss notification if it exists
                         suggestionNotifications.remove(payload.suggestionId)?.let { notifId ->
@@ -1590,9 +1584,9 @@ class ListenTogetherClient
             }
         }
 
-        private inline fun <reified T> sendMessage(
+        private fun sendMessage(
             type: String,
-            payload: T?,
+            payload: MessageLite?,
         ) {
             try {
                 val data = codec.encode(type, payload)
@@ -1608,7 +1602,7 @@ class ListenTogetherClient
         }
 
         private fun sendMessageNoPayload(type: String) {
-            sendMessage<Unit>(type, null)
+            sendMessage(type, null)
         }
 
         // Public API methods
@@ -1709,13 +1703,6 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot approve join", "Not host")
                 return
             }
-            val wasPending = _pendingJoinRequests.value.any { it.userId == userId }
-            if (!wasPending) {
-                log(LogLevel.WARNING, "approveJoin: Request for $userId not pending (already handled)")
-                return
-            }
-            _pendingJoinRequests.value = _pendingJoinRequests.value.filter { it.userId != userId }
-
             sendMessage(MessageTypes.APPROVE_JOIN, ApproveJoinPayload(userId))
 
             // Dismiss notification immediately when approved from UI
@@ -1735,14 +1722,8 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot reject join", "Not host")
                 return
             }
-            val wasPending = _pendingJoinRequests.value.any { it.userId == userId }
-            if (!wasPending) {
-                log(LogLevel.WARNING, "rejectJoin: Request for $userId not pending (already handled)")
-                return
-            }
-            _pendingJoinRequests.value = _pendingJoinRequests.value.filter { it.userId != userId }
-
             sendMessage(MessageTypes.REJECT_JOIN, RejectJoinPayload(userId, reason))
+            _pendingJoinRequests.value = _pendingJoinRequests.value.filter { it.userId != userId }
 
             // Dismiss notification immediately when rejected from UI
             joinRequestNotifications.remove(userId)?.let { notifId ->
@@ -1850,14 +1831,9 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot approve suggestion", "Not host")
                 return
             }
-            val wasPending = _pendingSuggestions.value.any { it.suggestionId == suggestionId }
-            if (!wasPending) {
-                log(LogLevel.WARNING, "approveSuggestion: Suggestion $suggestionId not pending (already handled)")
-                return
-            }
-            _pendingSuggestions.value = _pendingSuggestions.value.filter { it.suggestionId != suggestionId }
-
             sendMessage(MessageTypes.APPROVE_SUGGESTION, ApproveSuggestionPayload(suggestionId))
+            // Remove locally from pending list
+            _pendingSuggestions.value = _pendingSuggestions.value.filter { it.suggestionId != suggestionId }
 
             // Dismiss notification immediately when approved from UI
             suggestionNotifications.remove(suggestionId)?.let { notifId ->
@@ -1876,14 +1852,8 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot reject suggestion", "Not host")
                 return
             }
-            val wasPending = _pendingSuggestions.value.any { it.suggestionId == suggestionId }
-            if (!wasPending) {
-                log(LogLevel.WARNING, "rejectSuggestion: Suggestion $suggestionId not pending (already handled)")
-                return
-            }
-            _pendingSuggestions.value = _pendingSuggestions.value.filter { it.suggestionId != suggestionId }
-
             sendMessage(MessageTypes.REJECT_SUGGESTION, RejectSuggestionPayload(suggestionId, reason))
+            _pendingSuggestions.value = _pendingSuggestions.value.filter { it.suggestionId != suggestionId }
 
             // Dismiss notification immediately when rejected from UI
             suggestionNotifications.remove(suggestionId)?.let { notifId ->
