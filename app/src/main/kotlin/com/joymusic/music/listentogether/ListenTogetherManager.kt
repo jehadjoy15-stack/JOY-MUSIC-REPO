@@ -60,7 +60,7 @@ internal fun <T> upcomingQueueItems(
     currentIndex: Int,
 ): List<T> = if (currentIndex in queue.indices) queue.drop(currentIndex + 1) else emptyList()
 
-private const val ACTIVE_PLAYBACK_SYNC_TOLERANCE_MS = 2_000L
+private const val ACTIVE_PLAYBACK_SYNC_TOLERANCE_MS = 5_000L
 
 internal fun shouldSeekDuringActivePlayback(
     positionDifferenceMs: Long,
@@ -82,9 +82,9 @@ class ListenTogetherManager
             private const val TAG = "ListenTogetherManager"
 
             private const val SOFT_SYNC_THRESHOLD_MS = 50L
-            private const val HARD_SYNC_THRESHOLD_MS = 750L
-            private const val DRIFT_CORRECTION_SPEED = 0.02f
-            private const val DRIFT_CHECK_INTERVAL_MS = 250L
+            private const val HARD_SYNC_THRESHOLD_MS = 5_000L
+            private const val DRIFT_CORRECTION_SPEED = 0.03f
+            private const val DRIFT_CHECK_INTERVAL_MS = 500L
         }
 
         private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -2043,22 +2043,23 @@ class ListenTogetherManager
             heartbeatJob =
                 scope.launch {
                     while (heartbeatJob?.isActive == true && isInRoom && isHost) {
-                        delay(8000L)
+                        delay(10000L)
+                        if (isSyncing) continue
                         playerConnection?.player?.let { player ->
-                            if (player.playWhenReady && player.playbackState == Player.STATE_READY) {
+                            val currentTrackId = player.currentMediaItem?.mediaId
+                            if (player.playWhenReady && player.playbackState == Player.STATE_READY && currentTrackId != null && currentTrackId == lastSyncedTrackId) {
                                 val pos = player.currentPosition
-                                val beatTrackId = player.currentMediaItem?.mediaId
-                                Timber.tag(TAG).d("Host heartbeat: sending PLAY at pos $pos track=$beatTrackId")
+                                Timber.tag(TAG).d("Host heartbeat: sending PLAY at pos $pos track=$currentTrackId")
                                 client.sendPlaybackAction(
                                     PlaybackActions.PLAY,
-                                    trackId = beatTrackId,
+                                    trackId = currentTrackId,
                                     position = pos,
                                 )
                             }
                         }
                     }
                 }
-            Timber.tag(TAG).d("Host heartbeat started (8s interval)")
+            Timber.tag(TAG).d("Host heartbeat started (10s interval)")
         }
 
         private fun stopHeartbeat() {

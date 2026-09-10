@@ -3642,17 +3642,7 @@ class MusicService :
             ?: metadata.thumbnailUrl
             ?: "https://i.ytimg.com/vi/${metadata.id}/hqdefault.jpg"
 
-        val resolvedThumbnail = try {
-            withTimeoutOrNull(2500L) {
-                DiscordExternalAssets.resolve(
-                    imageUrl = rawThumbnail,
-                    appId = com.joymusic.music.BuildConfig.DISCORD_APP_ID.toString(),
-                    token = DiscordRpcManager.getAccessToken() ?: "",
-                )
-            }
-        } catch (_: Exception) {
-            null
-        } ?: DiscordExternalAssets.getCached(rawThumbnail)
+        val resolvedThumbnail = DiscordExternalAssets.getCached(rawThumbnail) ?: rawThumbnail
 
         val activity = DiscordActivityBuilder.build(
             songId = metadata.id,
