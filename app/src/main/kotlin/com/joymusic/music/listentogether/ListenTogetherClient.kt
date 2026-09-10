@@ -680,6 +680,13 @@ class ListenTogetherClient
                 return
             }
 
+            try {
+                webSocket?.close(1000, "Starting new connection")
+            } catch (e: Exception) {
+                // Ignore
+            }
+            webSocket = null
+
             _connectionState.value = ConnectionState.CONNECTING
             serverClock.reset()
             evaluateBackgroundDisconnectPolicy("connect")
@@ -1702,6 +1709,13 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot approve join", "Not host")
                 return
             }
+            val wasPending = _pendingJoinRequests.value.any { it.userId == userId }
+            if (!wasPending) {
+                log(LogLevel.WARNING, "approveJoin: Request for $userId not pending (already handled)")
+                return
+            }
+            _pendingJoinRequests.value = _pendingJoinRequests.value.filter { it.userId != userId }
+
             sendMessage(MessageTypes.APPROVE_JOIN, ApproveJoinPayload(userId))
 
             // Dismiss notification immediately when approved from UI
@@ -1721,8 +1735,14 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot reject join", "Not host")
                 return
             }
-            sendMessage(MessageTypes.REJECT_JOIN, RejectJoinPayload(userId, reason))
+            val wasPending = _pendingJoinRequests.value.any { it.userId == userId }
+            if (!wasPending) {
+                log(LogLevel.WARNING, "rejectJoin: Request for $userId not pending (already handled)")
+                return
+            }
             _pendingJoinRequests.value = _pendingJoinRequests.value.filter { it.userId != userId }
+
+            sendMessage(MessageTypes.REJECT_JOIN, RejectJoinPayload(userId, reason))
 
             // Dismiss notification immediately when rejected from UI
             joinRequestNotifications.remove(userId)?.let { notifId ->
@@ -1830,9 +1850,14 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot approve suggestion", "Not host")
                 return
             }
-            sendMessage(MessageTypes.APPROVE_SUGGESTION, ApproveSuggestionPayload(suggestionId))
-            // Remove locally from pending list
+            val wasPending = _pendingSuggestions.value.any { it.suggestionId == suggestionId }
+            if (!wasPending) {
+                log(LogLevel.WARNING, "approveSuggestion: Suggestion $suggestionId not pending (already handled)")
+                return
+            }
             _pendingSuggestions.value = _pendingSuggestions.value.filter { it.suggestionId != suggestionId }
+
+            sendMessage(MessageTypes.APPROVE_SUGGESTION, ApproveSuggestionPayload(suggestionId))
 
             // Dismiss notification immediately when approved from UI
             suggestionNotifications.remove(suggestionId)?.let { notifId ->
@@ -1851,8 +1876,14 @@ class ListenTogetherClient
                 log(LogLevel.ERROR, "Cannot reject suggestion", "Not host")
                 return
             }
-            sendMessage(MessageTypes.REJECT_SUGGESTION, RejectSuggestionPayload(suggestionId, reason))
+            val wasPending = _pendingSuggestions.value.any { it.suggestionId == suggestionId }
+            if (!wasPending) {
+                log(LogLevel.WARNING, "rejectSuggestion: Suggestion $suggestionId not pending (already handled)")
+                return
+            }
             _pendingSuggestions.value = _pendingSuggestions.value.filter { it.suggestionId != suggestionId }
+
+            sendMessage(MessageTypes.REJECT_SUGGESTION, RejectSuggestionPayload(suggestionId, reason))
 
             // Dismiss notification immediately when rejected from UI
             suggestionNotifications.remove(suggestionId)?.let { notifId ->

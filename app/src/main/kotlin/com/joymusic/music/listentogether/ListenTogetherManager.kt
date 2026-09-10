@@ -127,6 +127,9 @@ class ListenTogetherManager
         val isHost: Boolean get() = client.isHost
         val hasPersistedSession: Boolean get() = client.hasPersistedSession
 
+        private var lastSyncedSeekPos: Long = -1L
+        private var lastSeekTimestamp: Long = 0L
+
         private val playerListener =
             object : Player.Listener {
                 override fun onPlayWhenReadyChanged(
@@ -140,6 +143,9 @@ class ListenTogetherManager
                         if (connection.allowInternalSync) return
                         val player = connection.player
 
+                        // Ignore if play state has not actually changed
+                        if (lastSyncedIsPlaying == playWhenReady) return
+
                         Timber.tag(TAG).d("Play state changed: $playWhenReady (reason: $reason)")
 
                         // ALWAYS ensure track is synced before play/pause
@@ -151,22 +157,7 @@ class ListenTogetherManager
                             player.currentMetadata?.let { metadata ->
                                 sendTrackChangeInternal(metadata)
                                 lastSyncedTrackId = currentTrackId
-                                // Reset play state since server resets IsPlaying on track change
-                                lastSyncedIsPlaying = false
-                            }
-                            // Send play state AFTER a delay to let server process track change
-                            // Server sets IsPlaying=false on track change, so we must send it
-                            if (playWhenReady) {
-                                Timber.tag(TAG).d("[SYNC] Host is playing, sending PLAY after track change (with delay)")
-                                lastSyncedIsPlaying = true
-                                val position = player.currentPosition
-                                // CRITICAL: Add delay to let server process track change first
-                                scope.launch {
-                                    delay(150) // 150ms delay for server processing
-                                    if (isHost && isInRoom) {
-                                        client.sendPlaybackAction(PlaybackActions.PLAY, trackId = currentTrackId, position = position)
-                                    }
-                                }
+                                lastSyncedIsPlaying = playWhenReady
                             }
                             return
                         }
@@ -186,14 +177,14 @@ class ListenTogetherManager
                         val position = player.currentPosition
                         val currentTrackId = player.currentMediaItem?.mediaId
 
-                        if (playWhenReady) {
+                        if (playWhenReady && lastSyncedIsPlaying != true) {
                             Timber.tag(TAG).d("Host sending PLAY at position $position (track: $currentTrackId)")
-                            client.sendPlaybackAction(PlaybackActions.PLAY, trackId = currentTrackId, position = position)
                             lastSyncedIsPlaying = true
-                        } else if (!playWhenReady && (lastSyncedIsPlaying == true)) {
+                            client.sendPlaybackAction(PlaybackActions.PLAY, trackId = currentTrackId, position = position)
+                        } else if (!playWhenReady && lastSyncedIsPlaying != false) {
                             Timber.tag(TAG).d("Host sending PAUSE at position $position (track: $currentTrackId)")
-                            client.sendPlaybackAction(PlaybackActions.PAUSE, trackId = currentTrackId, position = position)
                             lastSyncedIsPlaying = false
+                            client.sendPlaybackAction(PlaybackActions.PAUSE, trackId = currentTrackId, position = position)
                         }
                     } catch (e: Exception) {
                         Timber.tag(TAG).e(e, "Error in sendPlayState")
@@ -218,27 +209,10 @@ class ListenTogetherManager
                         // Get metadata and send track change
                         player.currentMetadata?.let { metadata ->
                             lastSyncedTrackId = trackId
-                            // Reset play state tracking since server resets IsPlaying on track change
-                            lastSyncedIsPlaying = false
+                            lastSyncedIsPlaying = player.playWhenReady
 
                             Timber.tag(TAG).d("Host sending track change: ${metadata.title}")
                             sendTrackChangeInternal(metadata)
-
-                            // Send PLAY after a delay if host is currently playing
-                            // Server sets IsPlaying=false on track change, so we must re-send it
-                            val isPlaying = player.playWhenReady
-                            if (isPlaying) {
-                                Timber.tag(TAG).d("Host is playing during track change, sending PLAY (with delay)")
-                                lastSyncedIsPlaying = true
-                                val position = player.currentPosition
-                                // CRITICAL: Add delay to let server process track change first
-                                scope.launch {
-                                    delay(150) // 150ms delay for server processing
-                                    if (isHost && isInRoom) {
-                                        client.sendPlaybackAction(PlaybackActions.PLAY, trackId = trackId, position = position)
-                                    }
-                                }
-                            }
                         } ?: Timber
                             .tag(TAG)
                             .w("onMediaItemTransition: metadata not ready for $trackId; lastSyncedTrackId unchanged")
@@ -259,8 +233,15 @@ class ListenTogetherManager
                         // Only send seek if it was a user-initiated seek
                         if (reason == Player.DISCONTINUITY_REASON_SEEK) {
                             val trackId = playerConnection?.player?.currentMediaItem?.mediaId
-                            Timber.tag(TAG).d("Host sending SEEK to ${newPosition.positionMs} (track: $trackId)")
-                            client.sendPlaybackAction(PlaybackActions.SEEK, trackId = trackId, position = newPosition.positionMs)
+                            val pos = newPosition.positionMs
+                            val now = System.currentTimeMillis()
+                            if (kotlin.math.abs(pos - lastSyncedSeekPos) < 500L && (now - lastSeekTimestamp) < 800L) {
+                                return
+                            }
+                            lastSyncedSeekPos = pos
+                            lastSeekTimestamp = now
+                            Timber.tag(TAG).d("Host sending SEEK to $pos (track: $trackId)")
+                            client.sendPlaybackAction(PlaybackActions.SEEK, trackId = trackId, position = pos)
                         }
                     } catch (e: Exception) {
                         Timber.tag(TAG).e(e, "Error in onPositionDiscontinuity")
@@ -1909,35 +1890,13 @@ class ListenTogetherManager
          */
         fun getSessionAge(): Long = client.getSessionAge()
 
-        // Heartbeat timer
-        private var heartbeatJob: Job? = null
-
+        // Heartbeat timer - periodic PLAY action removed to eliminate playback broadcast loop
+        // Connection persistence and time synchronization are handled via WebSocket PING/PONG in ListenTogetherClient
         private fun startHeartbeat() {
-            if (heartbeatJob?.isActive == true) return
-            heartbeatJob =
-                scope.launch {
-                    while (heartbeatJob?.isActive == true && isInRoom && isHost) {
-                        delay(8000L)
-                        playerConnection?.player?.let { player ->
-                            if (player.playWhenReady && player.playbackState == Player.STATE_READY) {
-                                val pos = player.currentPosition
-                                val beatTrackId = player.currentMediaItem?.mediaId
-                                Timber.tag(TAG).d("Host heartbeat: sending PLAY at pos $pos track=$beatTrackId")
-                                client.sendPlaybackAction(
-                                    PlaybackActions.PLAY,
-                                    trackId = beatTrackId,
-                                    position = pos,
-                                )
-                            }
-                        }
-                    }
-                }
-            Timber.tag(TAG).d("Host heartbeat started (8s interval)")
+            // No-op
         }
 
         private fun stopHeartbeat() {
-            heartbeatJob?.cancel()
-            heartbeatJob = null
-            Timber.tag(TAG).d("Host heartbeat stopped")
+            // No-op
         }
     }
