@@ -40,6 +40,9 @@ object AudioTrimmer {
             }
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(60, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
             .build()
     }
 
@@ -64,29 +67,43 @@ object AudioTrimmer {
 
         val requestBuilder = Request.Builder()
             .url(playbackData.streamUrl)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
         playbackData.streamHeaders.forEach { (name, value) ->
             requestBuilder.header(name, value)
         }
 
-        val tempDownload = File(tempSourceDir, "source_${songId}_dl.tmp")
+        val tempDownload = File(tempSourceDir, "source_${songId}_dl_${System.currentTimeMillis()}.tmp")
         if (tempDownload.exists()) tempDownload.delete()
 
-        Timber.tag(TAG).d("Downloading stream to temporary file: %s", tempDownload.absolutePath)
-        httpClient.newCall(requestBuilder.build()).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("Failed to download audio stream: HTTP ${response.code}")
+        try {
+            Timber.tag(TAG).d("Downloading stream to temporary file: %s", tempDownload.absolutePath)
+            httpClient.newCall(requestBuilder.build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IOException("Failed to download audio stream: HTTP ${response.code}")
+                }
+                val body = response.body ?: throw IOException("Empty response body")
+                body.byteStream().use { input ->
+                    tempDownload.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                        }
+                        output.flush()
+                    }
+                }
             }
-            val body = response.body ?: throw IOException("Empty response body")
-            tempDownload.outputStream().use { output ->
-                body.byteStream().copyTo(output)
-            }
-        }
 
-        if (tempDownload.length() > 0) {
-            if (cachedSource.exists()) cachedSource.delete()
-            tempDownload.renameTo(cachedSource)
+            if (tempDownload.length() > 50_000L) {
+                if (cachedSource.exists()) cachedSource.delete()
+                tempDownload.renameTo(cachedSource)
+            } else {
+                throw IOException("Downloaded stream file is incomplete or too small")
+            }
+        } finally {
+            if (tempDownload.exists()) {
+                tempDownload.delete()
+            }
         }
 
         Timber.tag(TAG).d("Source audio ready: %s (%d bytes)", cachedSource.absolutePath, cachedSource.length())

@@ -82,18 +82,18 @@ fun AudioClipDialog(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    val totalDuration = remember(durationSeconds) {
+    val totalDuration = remember(songId, durationSeconds) {
         if (durationSeconds > 0) durationSeconds.toFloat() else 180f
     }
 
-    var sliderRange by remember(totalDuration) {
+    var sliderRange by remember(songId, totalDuration) {
         val initialEnd = minOf(30f, totalDuration)
         mutableStateOf(0f..initialEnd)
     }
 
     var isSharing by remember { mutableStateOf(false) }
-    var isPreparingSource by remember { mutableStateOf(true) }
-    var sourceFile by remember { mutableStateOf<File?>(null) }
+    var isPreparingPreview by remember { mutableStateOf(false) }
+    var sourceFile by remember(songId) { mutableStateOf<File?>(null) }
     var isPreviewPlaying by remember { mutableStateOf(false) }
 
     // Mini ExoPlayer for local preview
@@ -117,18 +117,15 @@ fun AudioClipDialog(
         }
     }
 
-    // Pre-download / prepare source audio as soon as dialog opens
+    // Pre-cache source audio in background without blocking UI
     LaunchedEffect(songId) {
-        isPreparingSource = true
         try {
             val file = AudioTrimmer.getOrDownloadSourceAudio(context, songId)
             sourceFile = file
             exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
             exoPlayer.prepare()
         } catch (e: Exception) {
-            timber.log.Timber.e(e, "Failed to prepare source audio")
-        } finally {
-            isPreparingSource = false
+            timber.log.Timber.w(e, "Background source preparation deferred")
         }
     }
 
@@ -369,19 +366,38 @@ fun AudioClipDialog(
                         if (isPreviewPlaying) {
                             exoPlayer.pause()
                         } else {
-                            val startMs = (sliderRange.start * 1000).toLong()
-                            if (exoPlayer.mediaItemCount == 0 && sourceFile != null) {
-                                exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(sourceFile!!)))
-                                exoPlayer.prepare()
+                            coroutineScope.launch {
+                                val startMs = (sliderRange.start * 1000).toLong()
+                                if (sourceFile == null) {
+                                    isPreparingPreview = true
+                                    try {
+                                        val file = AudioTrimmer.getOrDownloadSourceAudio(context, songId)
+                                        sourceFile = file
+                                        exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+                                        exoPlayer.prepare()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(R.string.clip_failed, e.localizedMessage ?: "Network error"),
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                        isPreparingPreview = false
+                                        return@launch
+                                    }
+                                    isPreparingPreview = false
+                                } else if (exoPlayer.mediaItemCount == 0) {
+                                    exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(sourceFile!!)))
+                                    exoPlayer.prepare()
+                                }
+                                exoPlayer.seekTo(startMs)
+                                exoPlayer.play()
                             }
-                            exoPlayer.seekTo(startMs)
-                            exoPlayer.play()
                         }
                     },
-                    enabled = !isPreparingSource,
+                    enabled = !isSharing && !isPreparingPreview,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    if (isPreparingSource) {
+                    if (isPreparingPreview) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
@@ -499,7 +515,7 @@ fun AudioClipDialog(
                                 }
                             }
                         },
-                        enabled = !isSharing && !isPreparingSource,
+                        enabled = !isSharing,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                         ),
