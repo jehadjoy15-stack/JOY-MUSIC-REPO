@@ -3579,12 +3579,14 @@ class MusicService :
 
             launch(Dispatchers.IO) {
                 val song = database.song(songId).first()
-                updateDiscordRPC(metadata, song, isPlaying)
+                if (song != null) {
+                    updateDiscordRPC(song, isPlaying)
+                }
             }
         }
     }
 
-    private suspend fun updateDiscordRPC(metadata: com.joymusic.music.models.MediaMetadata, song: Song?, isPlaying: Boolean) {
+    private suspend fun updateDiscordRPC(song: Song, isPlaying: Boolean) {
         if (!DiscordRpcManager.isReady()) {
             Timber.tag("DiscordSvc").w("updateDiscordRPC: skipping — not ready")
             return
@@ -3594,7 +3596,7 @@ class MusicService :
             return
         }
 
-        Timber.tag("DiscordSvc").i("updateDiscordRPC: title=%s, isPlaying=%s", metadata.title, isPlaying)
+        Timber.tag("DiscordSvc").i("updateDiscordRPC: title=%s, isPlaying=%s", song.song.title, isPlaying)
 
         // ExoPlayer must be accessed on the main thread
         val (currentPosition, speed, playerDuration) = withContext(Dispatchers.Main.immediate) {
@@ -3606,20 +3608,19 @@ class MusicService :
         val now = System.currentTimeMillis()
         val startTime = if (isPlaying) now - adjustedTime else 0L
         val durationMs = playerDuration
-            ?: (song?.song?.duration ?: metadata.duration).takeIf { it > 0 }?.times(1000L)
+            ?: song.song.duration.takeIf { it > 0 }?.times(1000L)
         val remainingMs = durationMs?.minus(currentPosition)?.coerceAtLeast(0L)
         val adjustedRemainingMs = remainingMs?.let { (it / speed).toLong() }
         val endTime = if (isPlaying && adjustedRemainingMs != null) now + adjustedRemainingMs else null
 
-        val artistName = song?.artists?.joinToString { it.name }?.ifEmpty { null }
-            ?: metadata.artists.joinToString { it.name }.ifEmpty { DiscordDefaults.UNKNOWN_ARTIST }
-        val albumName = song?.album?.title ?: metadata.album?.title
+        val artistName = song.artists.joinToString { it.name }.ifEmpty { DiscordDefaults.UNKNOWN_ARTIST }
+        val albumName = song.album?.title
         val songTitle = if (speed != 1.0f) {
-            "${metadata.title} [${String.format("%.2fx", speed)}]"
+            "${song.song.title} [${String.format("%.2fx", speed)}]"
         } else {
-            metadata.title
+            song.song.title
         }
-        val artistThumbnail = song?.artists?.firstOrNull()?.thumbnailUrl
+        val artistThumbnail = song.artists.firstOrNull()?.thumbnailUrl
 
         val advancedMode = dataStore.get(DiscordAdvancedModeKey, false)
         val activityType = dataStore.get(DiscordActivityTypeKey, DiscordDefaults.ACTIVITY_TYPE).toIntOrNull() ?: DiscordActivity.TYPE_LISTENING
@@ -3638,14 +3639,7 @@ class MusicService :
             advancedMode, activityType, activityName, stateTemplate, detailsTemplate,
         )
 
-        val rawThumbnail = song?.song?.thumbnailUrl?.takeIf { it.isNotBlank() }
-            ?: metadata.thumbnailUrl
-            ?: "https://i.ytimg.com/vi/${metadata.id}/hqdefault.jpg"
-
-        val resolvedThumbnail = DiscordExternalAssets.getCached(rawThumbnail) ?: rawThumbnail
-
         val activity = DiscordActivityBuilder.build(
-            songId = metadata.id,
             song = song,
             artistName = artistName,
             albumName = albumName,
@@ -3653,7 +3647,6 @@ class MusicService :
             songTitle = songTitle,
             startTimestamp = startTime,
             endTimestamp = endTime,
-            resolvedThumbnail = resolvedThumbnail,
             advancedMode = advancedMode,
             activityType = activityType,
             activityName = activityName,
@@ -3667,8 +3660,8 @@ class MusicService :
             btn2Url = btn2Url,
         )
 
-        Timber.tag("DiscordSvc").i("updateDiscordRPC: type=%d name=%s state=%s details=%s start=%d end=%d isPlaying=%s resolvedThumbnail=%s",
-            activity.activityType, activity.name, activity.state, activity.details, startTime, endTime ?: 0L, isPlaying, resolvedThumbnail)
+        Timber.tag("DiscordSvc").i("updateDiscordRPC: type=%d name=%s state=%s details=%s start=%d end=%d isPlaying=%s",
+            activity.activityType, activity.name, activity.state, activity.details, startTime, endTime ?: 0L, isPlaying)
 
         val statusStr = dataStore.get(DiscordUserStatusKey, DiscordDefaults.USER_STATUS)
         val presenceStatus = when (statusStr) {
@@ -3679,7 +3672,7 @@ class MusicService :
 
         DiscordRpcManager.setActivity(
             activity,
-            songId = metadata.id,
+            songId = song.song.id,
             isPlaying = isPlaying,
             status = presenceStatus,
         )

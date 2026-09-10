@@ -7,16 +7,14 @@ object DiscordActivityBuilder {
     private const val TAG = "DiscordSvc"
 
     fun build(
-        songId: String,
-        song: Song? = null,
+        song: Song,
         artistName: String,
         albumName: String?,
         artistThumbnail: String?,
         songTitle: String,
         startTimestamp: Long,
-        endTimestamp: Long? = null,
-        resolvedThumbnail: String? = null,
-        advancedMode: Boolean = false,
+        endTimestamp: Long?,
+        advancedMode: Boolean,
         activityType: Int = DiscordActivity.TYPE_LISTENING,
         activityName: String? = null,
         stateTemplate: String = DiscordDefaults.STATE_TEMPLATE,
@@ -27,12 +25,6 @@ object DiscordActivityBuilder {
         btn2Enabled: Boolean = true,
         btn2Label: String = DiscordDefaults.BUTTON2_LABEL,
         btn2Url: String = DiscordDefaults.BUTTON2_URL,
-        largeImageType: String = "thumbnail",
-        largeImageCustomUrl: String = "",
-        smallImageType: String = "artist",
-        smallImageCustomUrl: String = "",
-        largeTextSource: String = "album",
-        largeTextCustom: String = "",
     ): DiscordActivity {
         val state: String
         val details: String?
@@ -44,97 +36,64 @@ object DiscordActivityBuilder {
         if (advancedMode) {
             state = DiscordTemplateRenderer.render(
                 stateTemplate.ifEmpty { DiscordDefaults.STATE_TEMPLATE },
-                songTitle, artistName, albumName, songId
+                songTitle, artistName, albumName, song.song.id
             )
             details = DiscordTemplateRenderer.render(
                 detailsTemplate.ifEmpty { DiscordDefaults.DETAILS_TEMPLATE },
-                songTitle, artistName, albumName, songId
+                songTitle, artistName, albumName, song.song.id
             )
             renderedBtn1Label = if (btn1Enabled) {
                 DiscordTemplateRenderer.render(
                     btn1Label.ifEmpty { DiscordDefaults.BUTTON1_LABEL },
-                    songTitle, artistName, albumName, songId
+                    songTitle, artistName, albumName, song.song.id
                 )
             } else null
             renderedBtn1Url = if (btn1Enabled) {
                 DiscordTemplateRenderer.render(
                     btn1Url.ifEmpty { DiscordDefaults.BUTTON1_URL_TEMPLATE },
-                    songTitle, artistName, albumName, songId
+                    songTitle, artistName, albumName, song.song.id
                 )
             } else null
             renderedBtn2Label = if (btn2Enabled) {
                 DiscordTemplateRenderer.render(
                     btn2Label.ifEmpty { DiscordDefaults.BUTTON2_LABEL },
-                    songTitle, artistName, albumName, songId
+                    songTitle, artistName, albumName, song.song.id
                 )
             } else null
             renderedBtn2Url = if (btn2Enabled) {
                 DiscordTemplateRenderer.render(
                     btn2Url.ifEmpty { DiscordDefaults.BUTTON2_URL },
-                    songTitle, artistName, albumName, songId
+                    songTitle, artistName, albumName, song.song.id
                 )
             } else null
         } else {
             state = artistName
             details = songTitle
             renderedBtn1Label = DiscordDefaults.BUTTON1_LABEL
-            renderedBtn1Url = "${DiscordDefaults.YOUTUBE_WATCH_URL}$songId"
+            renderedBtn1Url = "${DiscordDefaults.YOUTUBE_WATCH_URL}${song.song.id}"
             renderedBtn2Label = DiscordDefaults.BUTTON2_LABEL
-            renderedBtn2Url = "https://joymusic.site/"
+            renderedBtn2Url = DiscordDefaults.BUTTON2_URL
         }
 
         val renderedName = if (advancedMode && !activityName.isNullOrEmpty()) {
             DiscordTemplateRenderer.render(
                 activityName,
-                songTitle, artistName, albumName, songId,
+                songTitle, artistName, albumName, song.song.id,
             )
         } else {
-            activityName?.takeIf { it.isNotEmpty() } ?: "JOY MUSIC"
+            activityName?.takeIf { it.isNotEmpty() } ?: artistName
         }
-
-        val songThumbnail = resolvedThumbnail?.takeIf { it.isNotBlank() }
-            ?: song?.song?.thumbnailUrl?.takeIf { it.isNotBlank() }
-            ?: "https://i.ytimg.com/vi/$songId/hqdefault.jpg"
-
-        val largeImage = when (largeImageType) {
-            "thumbnail" -> songThumbnail
-            "artist" -> artistThumbnail ?: songThumbnail
-            "appicon" -> "https://raw.githubusercontent.com/jehadjoy15-stack/apk-joy-music/main/assets/icon.png"
-            "custom" -> largeImageCustomUrl.ifBlank { songThumbnail }
-            else -> songThumbnail
-        }
-
-        val smallImage = when (smallImageType) {
-            "thumbnail" -> songThumbnail
-            "artist" -> artistThumbnail
-            "appicon" -> "https://raw.githubusercontent.com/jehadjoy15-stack/apk-joy-music/main/assets/icon.png"
-            "custom" -> smallImageCustomUrl.ifBlank { artistThumbnail }
-            "dontshow" -> null
-            else -> artistThumbnail
-        }
-
-        val renderedLargeText = when (largeTextSource) {
-            "song" -> songTitle
-            "artist" -> artistName
-            "album" -> albumName ?: ""
-            "app" -> "JOY MUSIC"
-            "custom" -> largeTextCustom.ifBlank { albumName ?: "" }
-            "dontshow" -> null
-            else -> albumName ?: ""
-        }
-
-        val resolvedType = if (advancedMode) activityType else DiscordActivity.TYPE_LISTENING
 
         val result = DiscordActivity(
-            activityType = resolvedType,
+            activityType = activityType,
             name = renderedName,
             state = state,
             details = details,
             startTimestamp = startTimestamp,
             endTimestamp = endTimestamp,
-            largeImage = largeImage,
-            largeText = renderedLargeText,
-            smallImage = smallImage,
+            largeImage = song.song.thumbnailUrl,
+            largeText = albumName,
+            smallImage = artistThumbnail,
             smallText = artistName,
             button1Label = renderedBtn1Label,
             button1Url = renderedBtn1Url,

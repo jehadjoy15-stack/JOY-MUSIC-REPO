@@ -58,6 +58,7 @@ import androidx.media3.exoplayer.offline.DownloadService
 import coil3.compose.AsyncImage
 import com.joymusic.innertube.YouTube
 import com.joymusic.music.LocalNavController
+import com.joymusic.music.ui.component.AudioClipDialog
 import com.joymusic.innertube.models.SongItem
 import com.joymusic.music.LocalDatabase
 import com.joymusic.music.LocalArtistNameAliases
@@ -147,6 +148,23 @@ fun YouTubeSongMenu(
     var showSelectArtistDialog by rememberSaveable {  
         mutableStateOf(false)  
     }  
+
+    var showAudioClipDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    AudioClipDialog(
+        isVisible = showAudioClipDialog,
+        songId = song.id,
+        title = song.title,
+        artist = artists.joinToString(", ") { it.name },
+        thumbnailUrl = song.thumbnail,
+        durationSeconds = song.duration ?: 0,
+        onDismiss = {
+            showAudioClipDialog = false
+            onDismiss()
+        },
+    )  
 
     if (showSelectArtistDialog) {  
         ListDialog(  
@@ -506,6 +524,20 @@ fun YouTubeSongMenu(
                             )
                         )
                     }
+                    add(
+                        Material3MenuItemData(
+                            title = { Text(text = stringResource(R.string.share_audio_clip)) },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.content_cut),
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                showAudioClipDialog = true
+                            },
+                        )
+                    )
                     add(
                         Material3MenuItemData(
                             title = { 

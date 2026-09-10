@@ -86,6 +86,7 @@ import com.joymusic.music.extensions.toMediaItem
 import com.joymusic.music.models.toMediaMetadata
 import com.joymusic.music.playback.ExoDownloadService
 import com.joymusic.music.playback.queues.YouTubeQueue
+import com.joymusic.music.ui.component.AudioClipDialog
 import com.joymusic.music.ui.component.DefaultDialog
 import com.joymusic.music.ui.component.ListDialog
 import com.joymusic.music.ui.component.LocalBottomSheetPageState
@@ -284,6 +285,23 @@ fun SongMenu(
     var showSelectArtistDialog by rememberSaveable {
         mutableStateOf(false)
     }
+
+    var showAudioClipDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    AudioClipDialog(
+        isVisible = showAudioClipDialog,
+        songId = song.id,
+        title = song.song.title,
+        artist = song.orderedArtists.joinToString(", ") { it.name },
+        thumbnailUrl = song.thumbnailUrl,
+        durationSeconds = song.song.duration,
+        onDismiss = {
+            showAudioClipDialog = false
+            onDismiss()
+        },
+    )
 
     var showDeleteUploadedDialog by rememberSaveable {
         mutableStateOf(false)
@@ -668,6 +686,20 @@ fun SongMenu(
             Material3MenuGroup(
                 items =
                     buildList {
+                        add(
+                            Material3MenuItemData(
+                                title = { Text(text = stringResource(R.string.share_audio_clip)) },
+                                icon = {
+                                    Icon(
+                                        painter = painterResource(R.drawable.content_cut),
+                                        contentDescription = null,
+                                    )
+                                },
+                                onClick = {
+                                    showAudioClipDialog = true
+                                },
+                            ),
+                        )
                         add(
                             Material3MenuItemData(
                                 title = {

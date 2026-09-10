@@ -1060,4 +1060,17 @@
     <string name="stream_source_android_vr_desc">Android VR clients (all versions).</string>
     <string name="stream_source_web_creator">WEB_CREATOR</string>
     <string name="stream_source_web_creator_desc">Creator web client.</string>
+
+    <!-- Audio Clip Sharing -->
+    <string name="share_audio_clip">Share audio clip</string>
+    <string name="clip_start_time">Start</string>
+    <string name="clip_end_time">End</string>
+    <string name="clip_duration">Duration: %s</string>
+    <string name="clip_share_button">Share Clip</string>
+    <string name="clip_preparing">Creating audio clip…</string>
+    <string name="clip_downloading">Downloading audio…</string>
+    <string name="clip_failed">Failed to create audio clip: %s</string>
+    <string name="clip_preview">Preview clip</string>
 </resources>
+
+

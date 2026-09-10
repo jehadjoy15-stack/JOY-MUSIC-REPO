@@ -93,6 +93,7 @@ import com.joymusic.music.models.MediaMetadata
 import com.joymusic.music.playback.ExoDownloadService
 import com.joymusic.music.db.entities.Song
 import com.joymusic.music.db.entities.SpeedDialItem
+import com.joymusic.music.ui.component.AudioClipDialog
 import com.joymusic.music.ui.component.BottomSheetState
 import com.joymusic.music.ui.component.ListDialog
 import com.joymusic.music.ui.component.Material3MenuGroup
@@ -190,6 +191,23 @@ fun PlayerMenu(
         visible = showListenTogetherDialog,
         mediaMetadata = mediaMetadata,
         onDismiss = { showListenTogetherDialog = false },
+    )
+
+    var showAudioClipDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    AudioClipDialog(
+        isVisible = showAudioClipDialog,
+        songId = mediaMetadata.id,
+        title = mediaMetadata.title,
+        artist = mediaMetadata.artists.joinToString(", ") { it.name },
+        thumbnailUrl = mediaMetadata.thumbnailUrl,
+        durationSeconds = mediaMetadata.duration,
+        onDismiss = {
+            showAudioClipDialog = false
+            onDismiss()
+        },
     )
 
     var showSelectArtistDialog by rememberSaveable {
@@ -488,6 +506,21 @@ fun PlayerMenu(
                                 onClick = {
                                     playerConnection.toggleLibrary()
                                     onDismiss()
+                                },
+                            ),
+                        )
+                        add(
+                            Material3MenuItemData(
+                                title = { Text(text = stringResource(R.string.share_audio_clip)) },
+                                icon = {
+                                    Icon(
+                                        painter = painterResource(R.drawable.content_cut),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                },
+                                onClick = {
+                                    showAudioClipDialog = true
                                 },
                             ),
                         )
