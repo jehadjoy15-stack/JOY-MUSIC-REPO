@@ -59,6 +59,10 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import android.net.ConnectivityManager
 import androidx.core.content.getSystemService
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import coil3.compose.AsyncImage
@@ -108,11 +112,16 @@ fun AudioClipDialog(
     var sourceFile by remember(songId) { mutableStateOf<File?>(null) }
     var isPreviewPlaying by remember { mutableStateOf(false) }
 
-    // Instant streaming ExoPlayer for local preview
+    // Instant streaming & audio-focused ExoPlayer for local preview
     val exoPlayer = remember {
-        val httpFactory = OkHttpDataSource.Factory(AudioTrimmer.httpClient)
-        val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+        val extractorsFactory = DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
+        val mediaSourceFactory = DefaultMediaSourceFactory(context, extractorsFactory)
         ExoPlayer.Builder(context)
+            .setAudioAttributes(audioAttributes, true)
             .setMediaSourceFactory(mediaSourceFactory)
             .build().apply {
                 playWhenReady = false
@@ -124,6 +133,11 @@ fun AudioClipDialog(
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 isPreviewPlaying = isPlaying
             }
+
+            override fun onPlayerError(error: PlaybackException) {
+                timber.log.Timber.e(error, "AudioClip preview player error")
+                isPreviewPlaying = false
+            }
         }
         exoPlayer.addListener(listener)
 
@@ -133,7 +147,7 @@ fun AudioClipDialog(
         }
     }
 
-    // Pre-cache source audio or prepare stream for instant preview
+    // Pre-cache source audio for instant preview
     LaunchedEffect(songId) {
         try {
             val file = AudioTrimmer.getOrDownloadSourceAudio(
@@ -146,25 +160,7 @@ fun AudioClipDialog(
             exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
             exoPlayer.prepare()
         } catch (e: Exception) {
-            timber.log.Timber.w(e, "Pre-download deferred; preparing stream fallback for preview")
-            try {
-                val connectivityManager = context.getSystemService<ConnectivityManager>()
-                if (connectivityManager != null) {
-                    withContext(Dispatchers.IO) {
-                        val playback = YTPlayerUtils.playerResponseForPlayback(
-                            videoId = songId,
-                            audioQuality = AudioQuality.HIGH,
-                            connectivityManager = connectivityManager,
-                        ).getOrNull()
-                        if (playback != null) {
-                            withContext(Dispatchers.Main) {
-                                exoPlayer.setMediaItem(MediaItem.fromUri(playback.streamUrl))
-                                exoPlayer.prepare()
-                            }
-                        }
-                    }
-                }
-            } catch (_: Exception) { }
+            timber.log.Timber.w(e, "Pre-download deferred for $songId")
         }
     }
 
@@ -402,11 +398,17 @@ fun AudioClipDialog(
                 // Preview Player Button
                 FilledTonalButton(
                     onClick = {
+                        playerConnection?.player?.let { mainPlayer ->
+                            if (mainPlayer.isPlaying) {
+                                mainPlayer.pause()
+                            }
+                        }
+
                         if (isPreviewPlaying) {
                             exoPlayer.pause()
                         } else {
                             val startMs = (sliderRange.start * 1000).toLong()
-                            if (exoPlayer.mediaItemCount == 0) {
+                            if (exoPlayer.mediaItemCount == 0 || sourceFile == null) {
                                 coroutineScope.launch {
                                     isPreparingPreview = true
                                     try {
@@ -424,7 +426,7 @@ fun AudioClipDialog(
                                     } catch (e: Exception) {
                                         Toast.makeText(
                                             context,
-                                            context.getString(R.string.clip_failed, e.localizedMessage ?: "Network error"),
+                                            context.getString(R.string.clip_failed, e.localizedMessage ?: "Audio error"),
                                             Toast.LENGTH_SHORT,
                                         ).show()
                                     } finally {

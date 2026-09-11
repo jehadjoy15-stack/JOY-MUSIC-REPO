@@ -164,7 +164,11 @@ object AudioTrimmer {
         playerCache: Cache? = null,
     ): File = withContext(Dispatchers.IO) {
         val tempSourceDir = File(context.cacheDir, "source_audio").apply { mkdirs() }
-        val cachedSource = File(tempSourceDir, "source_$songId.tmp")
+        val cachedSource = File(tempSourceDir, "source_$songId.m4a")
+        val oldCachedSource = File(tempSourceDir, "source_$songId.tmp")
+        if (oldCachedSource.exists() && oldCachedSource.length() > 50_000L && !cachedSource.exists()) {
+            oldCachedSource.renameTo(cachedSource)
+        }
 
         if (cachedSource.exists() && cachedSource.length() > 50_000L) {
             Timber.tag(TAG).d("Using existing cached source for $songId (${cachedSource.length()} bytes)")
@@ -192,7 +196,7 @@ object AudioTrimmer {
             connectivityManager = connectivityManager,
         ).getOrThrow()
 
-        val tempDownload = File(tempSourceDir, "source_${songId}_dl_${System.currentTimeMillis()}.tmp")
+        val tempDownload = File(tempSourceDir, "source_${songId}_dl_${System.currentTimeMillis()}.m4a")
         if (tempDownload.exists()) tempDownload.delete()
 
         try {
