@@ -25,10 +25,15 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.cache.Cache
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.core.net.toUri
+
 object AudioTrimmer {
     private const val TAG = "AudioTrimmer"
 
-    private val httpClient: OkHttpClient by lazy {
+    val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .proxy(YouTube.proxy)
             .proxyAuthenticator { _, response ->
@@ -46,7 +51,118 @@ object AudioTrimmer {
             .build()
     }
 
-    suspend fun getOrDownloadSourceAudio(context: Context, songId: String): File = withContext(Dispatchers.IO) {
+    private fun tryExtractFromCache(
+        cache: Cache?,
+        key: String,
+        destinationFile: File,
+    ): Boolean {
+        if (cache == null) return false
+        val cachedSpans = try { cache.getCachedSpans(key) } catch (_: Exception) { emptySet() }
+        if (cachedSpans.isEmpty()) return false
+
+        val totalCached = cachedSpans.sumOf { it.length }
+        if (totalCached < 50_000L) return false
+
+        try {
+            val cacheDataSource = CacheDataSource.Factory()
+                .setCache(cache)
+                .setUpstreamDataSourceFactory(null)
+                .createDataSource()
+
+            val dataSpec = DataSpec.Builder()
+                .setUri(key.toUri())
+                .setKey(key)
+                .build()
+
+            cacheDataSource.open(dataSpec)
+            destinationFile.outputStream().use { output ->
+                val buffer = ByteArray(64 * 1024)
+                var bytesRead: Int
+                while (true) {
+                    bytesRead = cacheDataSource.read(buffer, 0, buffer.size)
+                    if (bytesRead <= 0) break
+                    output.write(buffer, 0, bytesRead)
+                }
+                output.flush()
+            }
+            cacheDataSource.close()
+            return destinationFile.length() > 50_000L
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Could not extract directly from cache for key: %s", key)
+            destinationFile.delete()
+            return false
+        }
+    }
+
+    private fun downloadFastWithRanges(
+        streamUrl: String,
+        headers: Map<String, String>,
+        contentLength: Long?,
+        destinationFile: File,
+    ) {
+        val totalBytes = contentLength ?: run {
+            val probeReq = Request.Builder()
+                .url(streamUrl)
+                .header("Range", "bytes=0-0")
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
+                .build()
+            httpClient.newCall(probeReq).execute().use { res ->
+                val rangeHeader = res.header("Content-Range")
+                rangeHeader?.substringAfterLast('/')?.trim()?.toLongOrNull()
+            }
+        }
+
+        if (totalBytes != null && totalBytes > 100_000L) {
+            val chunkSize = 1024 * 1024L // 1MB unthrottled chunks
+            destinationFile.outputStream().use { output ->
+                var start = 0L
+                while (start < totalBytes) {
+                    val end = minOf(start + chunkSize - 1L, totalBytes - 1L)
+                    val chunkReq = Request.Builder()
+                        .url(streamUrl)
+                        .header("Range", "bytes=$start-$end")
+                        .apply { headers.forEach { (k, v) -> header(k, v) } }
+                        .build()
+
+                    httpClient.newCall(chunkReq).execute().use { response ->
+                        if (!response.isSuccessful && response.code != 206) {
+                            throw IOException("HTTP ${response.code} downloading chunk $start-$end")
+                        }
+                        val body = response.body ?: throw IOException("Empty chunk body")
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            var read: Int
+                            while (input.read(buffer).also { read = it } != -1) {
+                                output.write(buffer, 0, read)
+                            }
+                        }
+                    }
+                    start = end + 1L
+                }
+                output.flush()
+            }
+        } else {
+            val req = Request.Builder()
+                .url(streamUrl)
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
+                .build()
+            httpClient.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) throw IOException("HTTP ${res.code}")
+                res.body?.byteStream()?.use { input ->
+                    destinationFile.outputStream().use { output ->
+                        input.copyTo(output, 64 * 1024)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun getOrDownloadSourceAudio(
+        context: Context,
+        songId: String,
+        downloadCache: Cache? = null,
+        playerCache: Cache? = null,
+    ): File = withContext(Dispatchers.IO) {
         val tempSourceDir = File(context.cacheDir, "source_audio").apply { mkdirs() }
         val cachedSource = File(tempSourceDir, "source_$songId.tmp")
 
@@ -55,6 +171,17 @@ object AudioTrimmer {
             return@withContext cachedSource
         }
 
+        // 1. Try local cache extraction (0ms network)
+        if (tryExtractFromCache(downloadCache, songId, cachedSource)) {
+            Timber.tag(TAG).d("Extracted $songId from downloadCache")
+            return@withContext cachedSource
+        }
+        if (tryExtractFromCache(playerCache, songId, cachedSource)) {
+            Timber.tag(TAG).d("Extracted $songId from playerCache")
+            return@withContext cachedSource
+        }
+
+        // 2. High-speed unthrottled range download from network
         val connectivityManager = context.getSystemService<ConnectivityManager>()
             ?: throw IllegalStateException("ConnectivityManager unavailable")
 
@@ -65,34 +192,17 @@ object AudioTrimmer {
             connectivityManager = connectivityManager,
         ).getOrThrow()
 
-        val requestBuilder = Request.Builder()
-            .url(playbackData.streamUrl)
-
-        playbackData.streamHeaders.forEach { (name, value) ->
-            requestBuilder.header(name, value)
-        }
-
         val tempDownload = File(tempSourceDir, "source_${songId}_dl_${System.currentTimeMillis()}.tmp")
         if (tempDownload.exists()) tempDownload.delete()
 
         try {
-            Timber.tag(TAG).d("Downloading stream to temporary file: %s", tempDownload.absolutePath)
-            httpClient.newCall(requestBuilder.build()).execute().use { response ->
-                if (!response.isSuccessful) {
-                    throw IOException("Failed to download audio stream: HTTP ${response.code}")
-                }
-                val body = response.body ?: throw IOException("Empty response body")
-                body.byteStream().use { input ->
-                    tempDownload.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        var bytesRead: Int
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            output.write(buffer, 0, bytesRead)
-                        }
-                        output.flush()
-                    }
-                }
-            }
+            Timber.tag(TAG).d("Downloading fast chunked stream for %s", songId)
+            downloadFastWithRanges(
+                streamUrl = playbackData.streamUrl,
+                headers = playbackData.streamHeaders,
+                contentLength = playbackData.format.contentLength,
+                destinationFile = tempDownload,
+            )
 
             if (tempDownload.length() > 50_000L) {
                 if (cachedSource.exists()) cachedSource.delete()
@@ -117,11 +227,13 @@ object AudioTrimmer {
         artist: String,
         startMs: Long,
         endMs: Long,
+        downloadCache: Cache? = null,
+        playerCache: Cache? = null,
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             require(endMs > startMs) { "End time must be greater than start time" }
 
-            val sourceFile = getOrDownloadSourceAudio(context, songId)
+            val sourceFile = getOrDownloadSourceAudio(context, songId, downloadCache, playerCache)
 
             val clipsDir = File(context.cacheDir, "audio_clips").apply { mkdirs() }
 

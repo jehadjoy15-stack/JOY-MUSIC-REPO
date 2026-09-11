@@ -57,12 +57,21 @@ import androidx.core.content.FileProvider
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import android.net.ConnectivityManager
+import androidx.core.content.getSystemService
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import coil3.compose.AsyncImage
+import com.joymusic.music.LocalPlayerConnection
 import com.joymusic.music.R
+import com.joymusic.music.constants.AudioQuality
 import com.joymusic.music.utils.AudioTrimmer
+import com.joymusic.music.utils.YTPlayerUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -81,6 +90,9 @@ fun AudioClipDialog(
 
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val playerConnection = LocalPlayerConnection.current
+    val downloadCache = playerConnection?.service?.downloadCache
+    val playerCache = playerConnection?.service?.playerCache
 
     val totalDuration = remember(songId, durationSeconds) {
         if (durationSeconds > 0) durationSeconds.toFloat() else 180f
@@ -96,11 +108,15 @@ fun AudioClipDialog(
     var sourceFile by remember(songId) { mutableStateOf<File?>(null) }
     var isPreviewPlaying by remember { mutableStateOf(false) }
 
-    // Mini ExoPlayer for local preview
+    // Instant streaming ExoPlayer for local preview
     val exoPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            playWhenReady = false
-        }
+        val httpFactory = OkHttpDataSource.Factory(AudioTrimmer.httpClient)
+        val mediaSourceFactory = DefaultMediaSourceFactory(httpFactory)
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build().apply {
+                playWhenReady = false
+            }
     }
 
     DisposableEffect(Unit) {
@@ -117,15 +133,38 @@ fun AudioClipDialog(
         }
     }
 
-    // Pre-cache source audio in background without blocking UI
+    // Pre-cache source audio or prepare stream for instant preview
     LaunchedEffect(songId) {
         try {
-            val file = AudioTrimmer.getOrDownloadSourceAudio(context, songId)
+            val file = AudioTrimmer.getOrDownloadSourceAudio(
+                context = context,
+                songId = songId,
+                downloadCache = downloadCache,
+                playerCache = playerCache,
+            )
             sourceFile = file
             exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
             exoPlayer.prepare()
         } catch (e: Exception) {
-            timber.log.Timber.w(e, "Background source preparation deferred")
+            timber.log.Timber.w(e, "Pre-download deferred; preparing stream fallback for preview")
+            try {
+                val connectivityManager = context.getSystemService<ConnectivityManager>()
+                if (connectivityManager != null) {
+                    withContext(Dispatchers.IO) {
+                        val playback = YTPlayerUtils.playerResponseForPlayback(
+                            videoId = songId,
+                            audioQuality = AudioQuality.HIGH,
+                            connectivityManager = connectivityManager,
+                        ).getOrNull()
+                        if (playback != null) {
+                            withContext(Dispatchers.Main) {
+                                exoPlayer.setMediaItem(MediaItem.fromUri(playback.streamUrl))
+                                exoPlayer.prepare()
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) { }
         }
     }
 
@@ -366,29 +405,33 @@ fun AudioClipDialog(
                         if (isPreviewPlaying) {
                             exoPlayer.pause()
                         } else {
-                            coroutineScope.launch {
-                                val startMs = (sliderRange.start * 1000).toLong()
-                                if (sourceFile == null) {
+                            val startMs = (sliderRange.start * 1000).toLong()
+                            if (exoPlayer.mediaItemCount == 0) {
+                                coroutineScope.launch {
                                     isPreparingPreview = true
                                     try {
-                                        val file = AudioTrimmer.getOrDownloadSourceAudio(context, songId)
+                                        val file = AudioTrimmer.getOrDownloadSourceAudio(
+                                            context = context,
+                                            songId = songId,
+                                            downloadCache = downloadCache,
+                                            playerCache = playerCache,
+                                        )
                                         sourceFile = file
                                         exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
                                         exoPlayer.prepare()
+                                        exoPlayer.seekTo(startMs)
+                                        exoPlayer.play()
                                     } catch (e: Exception) {
                                         Toast.makeText(
                                             context,
                                             context.getString(R.string.clip_failed, e.localizedMessage ?: "Network error"),
                                             Toast.LENGTH_SHORT,
                                         ).show()
+                                    } finally {
                                         isPreparingPreview = false
-                                        return@launch
                                     }
-                                    isPreparingPreview = false
-                                } else if (exoPlayer.mediaItemCount == 0) {
-                                    exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(sourceFile!!)))
-                                    exoPlayer.prepare()
                                 }
+                            } else {
                                 exoPlayer.seekTo(startMs)
                                 exoPlayer.play()
                             }
@@ -483,6 +526,8 @@ fun AudioClipDialog(
                                     artist = artist,
                                     startMs = startMs,
                                     endMs = endMs,
+                                    downloadCache = downloadCache,
+                                    playerCache = playerCache,
                                 )
 
                                 isSharing = false
