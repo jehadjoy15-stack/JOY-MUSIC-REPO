@@ -13,7 +13,7 @@ object DiscordDefaults {
     const val DETAILS_TEMPLATE = "{song.name}"
 
     const val ACTIVITY_TYPE = "2"
-    const val ACTIVITY_NAME = ""
+    const val ACTIVITY_NAME = "JOY MUSIC"
 
     const val USER_STATUS = "online"
     const val STATUS_IDLE = "idle"

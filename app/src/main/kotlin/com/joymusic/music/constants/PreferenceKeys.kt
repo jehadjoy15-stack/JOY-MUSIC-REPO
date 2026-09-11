@@ -738,3 +738,5 @@ val CountryCodeToName =
         "YE" to "Yemen",
         "ZW" to "Zimbabwe",
     )
+
+val DownloadLocationKey = stringPreferencesKey("downloadLocation")

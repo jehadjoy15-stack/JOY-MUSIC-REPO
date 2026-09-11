@@ -277,8 +277,9 @@ object AudioTrimmer {
                     isOpusOrWebm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
                         Pair(MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG, "ogg")
                     }
-                    isOpusOrWebm -> {
-                        Pair(MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM, "webm")
+                    isOpusOrWebm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP -> {
+                        // On Android 9 (API 28) and below, MUXER_OUTPUT_WEBM with Opus audio often fails; use AAC transcode
+                        Pair(MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4, "m4a")
                     }
                     else -> {
                         Pair(MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4, "m4a")
@@ -294,63 +295,277 @@ object AudioTrimmer {
                 val outputFile = File(clipsDir, clipFileName)
                 if (outputFile.exists()) outputFile.delete()
 
-                val muxer = MediaMuxer(outputFile.absolutePath, muxerOutputFormat)
-                val muxerTrackIndex = muxer.addTrack(audioFormat)
-                muxer.start()
-
-                extractor.selectTrack(audioTrackIndex)
-                val startUs = startMs * 1000L
-                val endUs = endMs * 1000L
-
-                extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-
-                val maxBufferSize = if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
-                    audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
-                } else {
-                    512 * 1024
-                }.coerceAtLeast(256 * 1024)
-
-                val buffer = ByteBuffer.allocateDirect(maxBufferSize)
-                val bufferInfo = MediaCodec.BufferInfo()
-                var firstSampleTimeUs = -1L
-
-                try {
-                    while (true) {
-                        bufferInfo.offset = 0
-                        bufferInfo.size = extractor.readSampleData(buffer, 0)
-                        if (bufferInfo.size < 0) {
-                            break
-                        }
-
-                        val sampleTimeUs = extractor.sampleTime
-                        if (sampleTimeUs > endUs) {
-                            break
-                        }
-
-                        if (sampleTimeUs >= startUs) {
-                            if (firstSampleTimeUs < 0) {
-                                firstSampleTimeUs = sampleTimeUs
-                            }
-                            bufferInfo.presentationTimeUs = (sampleTimeUs - firstSampleTimeUs).coerceAtLeast(0L)
-                            bufferInfo.flags = extractor.sampleFlags
-                            muxer.writeSampleData(muxerTrackIndex, buffer, bufferInfo)
-                        }
-
-                        extractor.advance()
+                // If Opus/WebM on Android 9 (or if standard muxer fails), use direct universal AAC transcoding
+                if (isOpusOrWebm && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                    val success = trimAndTranscodeToAac(sourceFile, outputFile, startMs, endMs)
+                    if (success && outputFile.exists() && outputFile.length() > 1000L) {
+                        return@runCatching outputFile
                     }
-                } finally {
-                    try {
-                        muxer.stop()
-                    } catch (e: Exception) {
-                        Timber.tag(TAG).e(e, "Error stopping muxer")
-                    }
-                    muxer.release()
                 }
 
-                outputFile
+                try {
+                    val muxer = MediaMuxer(outputFile.absolutePath, muxerOutputFormat)
+                    val muxerTrackIndex = muxer.addTrack(audioFormat)
+                    muxer.start()
+
+                    extractor.selectTrack(audioTrackIndex)
+                    val startUs = startMs * 1000L
+                    val endUs = endMs * 1000L
+
+                    extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+
+                    val maxBufferSize = if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                        audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+                    } else {
+                        512 * 1024
+                    }.coerceAtLeast(256 * 1024)
+
+                    val buffer = ByteBuffer.allocateDirect(maxBufferSize)
+                    val bufferInfo = MediaCodec.BufferInfo()
+                    var firstSampleTimeUs = -1L
+
+                    try {
+                        while (true) {
+                            bufferInfo.offset = 0
+                            bufferInfo.size = extractor.readSampleData(buffer, 0)
+                            if (bufferInfo.size < 0) {
+                                break
+                            }
+
+                            val sampleTimeUs = extractor.sampleTime
+                            if (sampleTimeUs > endUs) {
+                                break
+                            }
+
+                            if (sampleTimeUs >= startUs) {
+                                if (firstSampleTimeUs < 0) {
+                                    firstSampleTimeUs = sampleTimeUs
+                                }
+                                bufferInfo.presentationTimeUs = (sampleTimeUs - firstSampleTimeUs).coerceAtLeast(0L)
+                                bufferInfo.flags = extractor.sampleFlags
+                                muxer.writeSampleData(muxerTrackIndex, buffer, bufferInfo)
+                            }
+
+                            extractor.advance()
+                        }
+                    } finally {
+                        try {
+                            muxer.stop()
+                        } catch (e: Exception) {
+                            Timber.tag(TAG).e(e, "Error stopping muxer")
+                        }
+                        muxer.release()
+                    }
+
+                    outputFile
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w(e, "Standard muxing failed, falling back to universal AAC transcode")
+                    if (outputFile.exists()) outputFile.delete()
+                    val aacFallbackFile = File(clipsDir, "$sanitizedTitle - $sanitizedArtist (Clip).m4a")
+                    val success = trimAndTranscodeToAac(sourceFile, aacFallbackFile, startMs, endMs)
+                    if (success && aacFallbackFile.exists() && aacFallbackFile.length() > 1000L) {
+                        aacFallbackFile
+                    } else {
+                        throw e
+                    }
+                }
             } finally {
                 extractor.release()
             }
+        }
+    }
+
+    /**
+     * Universal audio trimming & transcoding to standard AAC LC (.m4a).
+     * Works on all Android versions (Android 5.0 through Android 15+) without OEM codec incompatibilities.
+     */
+    fun trimAndTranscodeToAac(
+        sourceFile: File,
+        outputAacFile: File,
+        startMs: Long = 0L,
+        endMs: Long = Long.MAX_VALUE,
+    ): Boolean {
+        val extractor = MediaExtractor()
+        var decoder: MediaCodec? = null
+        var encoder: MediaCodec? = null
+        var muxer: MediaMuxer? = null
+        var isMuxerStarted = false
+
+        return try {
+            extractor.setDataSource(sourceFile.absolutePath)
+            var audioTrack = -1
+            var inputFormat: MediaFormat? = null
+
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    audioTrack = i
+                    inputFormat = format
+                    extractor.selectTrack(i)
+                    break
+                }
+            }
+
+            if (audioTrack < 0 || inputFormat == null) {
+                return false
+            }
+
+            val startUs = startMs * 1000L
+            val endUs = if (endMs == Long.MAX_VALUE) Long.MAX_VALUE else endMs * 1000L
+            if (startUs > 0) {
+                extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            }
+
+            val inputMime = inputFormat.getString(MediaFormat.KEY_MIME) ?: ""
+            val sampleRate = if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            } else 44100
+            val channelCount = if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            } else 2
+
+            decoder = MediaCodec.createDecoderByType(inputMime).apply {
+                configure(inputFormat, null, null, 0)
+                start()
+            }
+
+            val aacFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, 160_000)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
+            }
+
+            encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
+                configure(aacFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                start()
+            }
+
+            if (outputAacFile.exists()) outputAacFile.delete()
+            muxer = MediaMuxer(outputAacFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            var aacTrackIndex = -1
+
+            val decodeInfo = MediaCodec.BufferInfo()
+            val encodeInfo = MediaCodec.BufferInfo()
+
+            var isExtractorEOS = false
+            var isDecoderEOS = false
+            var isEncoderEOS = false
+            var firstPcmPresentationTimeUs = -1L
+
+            while (!isEncoderEOS) {
+                // 1. Feed Extractor to Decoder
+                if (!isExtractorEOS) {
+                    val inIdx = decoder.dequeueInputBuffer(5000L)
+                    if (inIdx >= 0) {
+                        val inBuf = decoder.getInputBuffer(inIdx)
+                        if (inBuf != null) {
+                            val size = extractor.readSampleData(inBuf, 0)
+                            val sampleTime = extractor.sampleTime
+                            if (size < 0 || (endUs != Long.MAX_VALUE && sampleTime > endUs)) {
+                                decoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                isExtractorEOS = true
+                            } else {
+                                decoder.queueInputBuffer(inIdx, 0, size, sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                }
+
+                // 2. Feed Decoder to Encoder
+                if (!isDecoderEOS) {
+                    val outIdx = decoder.dequeueOutputBuffer(decodeInfo, 5000L)
+                    if (outIdx >= 0) {
+                        val pcmBuf = decoder.getOutputBuffer(outIdx)
+                        if ((decodeInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            isDecoderEOS = true
+                        }
+
+                        if (decodeInfo.size > 0 && pcmBuf != null) {
+                            val pcmTime = decodeInfo.presentationTimeUs
+                            // Only include PCM samples within [startUs, endUs]
+                            if (pcmTime >= startUs && pcmTime <= endUs) {
+                                if (firstPcmPresentationTimeUs < 0) {
+                                    firstPcmPresentationTimeUs = pcmTime
+                                }
+                                val adjustedPts = (pcmTime - firstPcmPresentationTimeUs).coerceAtLeast(0L)
+
+                                var pcmOffset = decodeInfo.offset
+                                var pcmRemaining = decodeInfo.size
+
+                                while (pcmRemaining > 0) {
+                                    val encInIdx = encoder.dequeueInputBuffer(5000L)
+                                    if (encInIdx >= 0) {
+                                        val encInBuf = encoder.getInputBuffer(encInIdx)
+                                        if (encInBuf != null) {
+                                            encInBuf.clear()
+                                            val chunkSize = minOf(pcmRemaining, encInBuf.capacity())
+                                            pcmBuf.position(pcmOffset)
+                                            pcmBuf.limit(pcmOffset + chunkSize)
+                                            encInBuf.put(pcmBuf)
+
+                                            pcmOffset += chunkSize
+                                            pcmRemaining -= chunkSize
+
+                                            val flags = if (isDecoderEOS && pcmRemaining == 0) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
+                                            encoder.queueInputBuffer(encInIdx, 0, chunkSize, adjustedPts, flags)
+                                        }
+                                    } else {
+                                        break
+                                    }
+                                }
+                            }
+                        } else if (isDecoderEOS) {
+                            val encInIdx = encoder.dequeueInputBuffer(5000L)
+                            if (encInIdx >= 0) {
+                                encoder.queueInputBuffer(encInIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            }
+                        }
+                        decoder.releaseOutputBuffer(outIdx, false)
+                    }
+                }
+
+                // 3. Drain Encoder to Muxer
+                while (true) {
+                    val encOutIdx = encoder.dequeueOutputBuffer(encodeInfo, 5000L)
+                    if (encOutIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        break
+                    } else if (encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        if (!isMuxerStarted) {
+                            aacTrackIndex = muxer.addTrack(encoder.outputFormat)
+                            muxer.start()
+                            isMuxerStarted = true
+                        }
+                    } else if (encOutIdx >= 0) {
+                        val aacBuf = encoder.getOutputBuffer(encOutIdx)
+                        if (aacBuf != null && encodeInfo.size > 0 && isMuxerStarted) {
+                            aacBuf.position(encodeInfo.offset)
+                            aacBuf.limit(encodeInfo.offset + encodeInfo.size)
+                            muxer.writeSampleData(aacTrackIndex, aacBuf, encodeInfo)
+                        }
+                        encoder.releaseOutputBuffer(encOutIdx, false)
+                        if ((encodeInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            isEncoderEOS = true
+                            break
+                        }
+                    }
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Error transcoding audio to AAC")
+            false
+        } finally {
+            try { decoder?.stop() } catch (_: Exception) {}
+            decoder?.release()
+            try { encoder?.stop() } catch (_: Exception) {}
+            encoder?.release()
+            if (isMuxerStarted) {
+                try { muxer?.stop() } catch (_: Exception) {}
+            }
+            muxer?.release()
+            extractor.release()
         }
     }
 }

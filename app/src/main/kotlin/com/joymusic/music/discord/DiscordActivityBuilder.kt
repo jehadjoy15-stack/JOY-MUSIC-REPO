@@ -81,7 +81,7 @@ object DiscordActivityBuilder {
                 songTitle, artistName, albumName, song.song.id,
             )
         } else {
-            activityName?.takeIf { it.isNotEmpty() } ?: artistName
+            activityName?.takeIf { it.isNotEmpty() } ?: "JOY MUSIC"
         }
 
         val result = DiscordActivity(

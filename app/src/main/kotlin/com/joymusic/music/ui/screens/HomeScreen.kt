@@ -35,6 +35,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
@@ -2450,7 +2451,10 @@ fun HomeScreen(
                                             Modifier
                                                 .height((MoodAndGenresButtonHeight + 12.dp) * 4 + 12.dp),
                                     ) {
-                                        items(moodAndGenres, key = { it.title }) {
+                                        itemsIndexed(
+                                            moodAndGenres,
+                                            key = { index, it -> "${it.title}_${it.endpoint.browseId}_${it.endpoint.params}_$index" },
+                                        ) { _, it ->
                                             MoodAndGenresButton(
                                                 title = it.title,
                                                 onClick = {

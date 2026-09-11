@@ -6,7 +6,10 @@
 package com.joymusic.music.ui.screens.recognition
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.speech.RecognizerIntent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -89,8 +92,15 @@ import com.joymusic.music.utils.SearchRoutes
 import com.joymusic.shazamkit.models.RecognitionResult
 import com.joymusic.shazamkit.models.RecognitionStatus
 import kotlinx.coroutines.Dispatchers
+import com.joymusic.music.recognition.MusicRecognitionService
+import com.joymusic.music.recognition.SingRecognitionHelper
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
+
+enum class RecognitionMode {
+    SONG, // Shazam acoustic fingerprinting (Listen to music)
+    SING, // In-app lyrics & singing AI engine (Sing to search)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,28 +112,34 @@ fun RecognitionScreen(
     val database = LocalDatabase.current
     val coroutineScope = rememberCoroutineScope()
 
-    // Only reset in Ready state: Listening/Processing belong to a running widget-service
-    // recognition that must not be cancelled; Success/NoMatch/Error are results pending
-    // display and history saving.
+    var recognitionMode by remember { mutableStateOf(RecognitionMode.SONG) }
+
+    // Only reset in Ready state
     LaunchedEffect(Unit) {
-        if (com.joymusic.music.recognition.MusicRecognitionService.recognitionStatus.value
-                is RecognitionStatus.Ready
-        ) {
-            com.joymusic.music.recognition.MusicRecognitionService
-                .reset()
+        if (MusicRecognitionService.recognitionStatus.value is RecognitionStatus.Ready) {
+            MusicRecognitionService.reset()
+        }
+        if (SingRecognitionHelper.status.value is RecognitionStatus.Ready) {
+            SingRecognitionHelper.reset()
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            com.joymusic.music.recognition.MusicRecognitionService
-                .reset()
+            MusicRecognitionService.reset()
+            SingRecognitionHelper.reset()
         }
     }
 
-    // Observe recognition status from service for real-time updates (Listening -> Processing -> Result)
-    val recognitionStatus by com.joymusic.music.recognition.MusicRecognitionService.recognitionStatus
-        .collectAsStateWithLifecycle()
+    // Observe status from both services
+    val songRecognitionStatus by MusicRecognitionService.recognitionStatus.collectAsStateWithLifecycle()
+    val singRecognitionStatus by SingRecognitionHelper.status.collectAsStateWithLifecycle()
+    val heardLyrics by SingRecognitionHelper.heardLyrics.collectAsStateWithLifecycle()
+
+    val currentStatus = when (recognitionMode) {
+        RecognitionMode.SONG -> songRecognitionStatus
+        RecognitionMode.SING -> singRecognitionStatus
+    }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -132,6 +148,30 @@ fun RecognitionScreen(
         )
     }
 
+    fun resetToReady() {
+        MusicRecognitionService.reset()
+        SingRecognitionHelper.reset()
+    }
+
+    val speechInputLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult(),
+        ) { result ->
+            if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+                val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                val query = matches?.firstOrNull { it.isNotBlank() }
+                if (!query.isNullOrBlank()) {
+                    coroutineScope.launch {
+                        SingRecognitionHelper.searchAndMatchSong(query)
+                    }
+                } else {
+                    resetToReady()
+                }
+            } else {
+                resetToReady()
+            }
+        }
+
     val permissionLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestPermission(),
@@ -139,17 +179,28 @@ fun RecognitionScreen(
             hasPermission = isGranted
             if (isGranted) {
                 coroutineScope.launch {
-                    com.joymusic.music.recognition.MusicRecognitionService
-                        .recognize(context)
+                    when (recognitionMode) {
+                        RecognitionMode.SONG -> MusicRecognitionService.recognize(context)
+                        RecognitionMode.SING -> SingRecognitionHelper.startListening(context, coroutineScope)
+                    }
                 }
             }
         }
 
-    fun startRecognition() {
+    fun startRecognition(mode: RecognitionMode = recognitionMode) {
+        recognitionMode = mode
         if (hasPermission) {
             coroutineScope.launch {
-                com.joymusic.music.recognition.MusicRecognitionService
-                    .recognize(context)
+                when (mode) {
+                    RecognitionMode.SONG -> {
+                        SingRecognitionHelper.reset()
+                        MusicRecognitionService.recognize(context)
+                    }
+                    RecognitionMode.SING -> {
+                        MusicRecognitionService.reset()
+                        SingRecognitionHelper.startListening(context, coroutineScope)
+                    }
+                }
             }
         } else {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -157,22 +208,13 @@ fun RecognitionScreen(
     }
 
     LaunchedEffect(Unit) {
-        if (autoStart &&
-            com.joymusic.music.recognition.MusicRecognitionService.recognitionStatus.value
-                is RecognitionStatus.Ready
-        ) {
-            startRecognition()
+        if (autoStart && MusicRecognitionService.recognitionStatus.value is RecognitionStatus.Ready) {
+            startRecognition(RecognitionMode.SONG)
         }
     }
 
-    fun resetToReady() {
-        com.joymusic.music.recognition.MusicRecognitionService
-            .reset()
-    }
-
     fun saveToHistory(result: RecognitionResult) {
-        // Skip if the widget service already persisted this result to avoid a duplicate entry
-        if (com.joymusic.music.recognition.MusicRecognitionService.resultSavedExternally) return
+        if (MusicRecognitionService.resultSavedExternally) return
         coroutineScope.launch(Dispatchers.IO) {
             database.query {
                 insert(
@@ -234,7 +276,7 @@ fun RecognitionScreen(
             verticalArrangement = Arrangement.Center,
         ) {
             AnimatedContent(
-                targetState = recognitionStatus,
+                targetState = currentStatus,
                 transitionSpec = {
                     (fadeIn() + scaleIn()).togetherWith(fadeOut() + scaleOut())
                 },
@@ -242,32 +284,37 @@ fun RecognitionScreen(
             ) { status ->
                 when (status) {
                     is RecognitionStatus.Ready -> {
-                        ReadyState(onStartRecognition = ::startRecognition)
+                        ReadyState(
+                            currentMode = recognitionMode,
+                            onModeChanged = { newMode ->
+                                recognitionMode = newMode
+                                resetToReady()
+                            },
+                            onStartRecognition = { startRecognition(recognitionMode) },
+                        )
                     }
 
                     is RecognitionStatus.Listening -> {
                         ListeningState(
-                            onCancel = {
-                                com.joymusic.music.recognition.MusicRecognitionService
-                                    .reset()
-                            },
+                            mode = recognitionMode,
+                            heardLyrics = heardLyrics,
+                            onCancel = ::resetToReady,
                         )
                     }
 
                     is RecognitionStatus.Processing -> {
-                        ProcessingState()
+                        ProcessingState(mode = recognitionMode)
                     }
 
                     is RecognitionStatus.Success -> {
                         SuccessState(
                             result = status.result,
                             onPlayOnApp = { result ->
-                                // Search for the track on YouTube Music
                                 val searchQuery = "${result.title} ${result.artist}"
                                 navController.navigate(SearchRoutes.resultRoute(searchQuery))
                             },
                             onTryAgain = {
-                                startRecognition()
+                                startRecognition(recognitionMode)
                             },
                             onClose = ::resetToReady,
                             onSaveToHistory = ::saveToHistory,
@@ -277,8 +324,15 @@ fun RecognitionScreen(
                     is RecognitionStatus.NoMatch -> {
                         NoMatchState(
                             message = status.message,
+                            currentMode = recognitionMode,
+                            onSwitchToSingMode = {
+                                startRecognition(RecognitionMode.SING)
+                            },
+                            onSwitchToSongMode = {
+                                startRecognition(RecognitionMode.SONG)
+                            },
                             onTryAgain = {
-                                startRecognition()
+                                startRecognition(recognitionMode)
                             },
                         )
                     }
@@ -286,8 +340,18 @@ fun RecognitionScreen(
                     is RecognitionStatus.Error -> {
                         ErrorState(
                             message = status.message,
+                            isSingMode = recognitionMode == RecognitionMode.SING,
+                            onLaunchVoiceDialog = {
+                                try {
+                                    val voiceIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                        putExtra(RecognizerIntent.EXTRA_PROMPT, "Sing or speak lyrics...")
+                                    }
+                                    speechInputLauncher.launch(voiceIntent)
+                                } catch (_: Exception) {}
+                            },
                             onTryAgain = {
-                                startRecognition()
+                                startRecognition(recognitionMode)
                             },
                         )
                     }
@@ -298,15 +362,81 @@ fun RecognitionScreen(
 }
 
 @Composable
-private fun ReadyState(onStartRecognition: () -> Unit) {
+private fun ReadyState(
+    currentMode: RecognitionMode,
+    onModeChanged: (RecognitionMode) -> Unit,
+    onStartRecognition: () -> Unit,
+) {
+    val context = LocalContext.current
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
+        // Mode Selector Pills
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = if (currentMode == RecognitionMode.SONG) MaterialTheme.colorScheme.primary else Color.Transparent,
+                modifier = Modifier.clickable { onModeChanged(RecognitionMode.SONG) },
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.mic),
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = if (currentMode == RecognitionMode.SONG) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = stringResource(R.string.song_mode),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (currentMode == RecognitionMode.SONG) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = if (currentMode == RecognitionMode.SING) MaterialTheme.colorScheme.primary else Color.Transparent,
+                modifier = Modifier.clickable { onModeChanged(RecognitionMode.SING) },
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.music_note),
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = if (currentMode == RecognitionMode.SING) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = stringResource(R.string.sing_mode),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (currentMode == RecognitionMode.SING) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        // Main Tap Circle
         Box(
             modifier =
                 Modifier
-                    .size(200.dp)
+                    .size(190.dp)
                     .clip(CircleShape)
                     .background(
                         Brush.radialGradient(
@@ -323,30 +453,164 @@ private fun ReadyState(onStartRecognition: () -> Unit) {
             Box(
                 modifier =
                     Modifier
-                        .size(160.dp)
+                        .size(150.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primary),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    painter = painterResource(R.drawable.mic),
+                    painter = painterResource(
+                        if (currentMode == RecognitionMode.SING) R.drawable.music_note else R.drawable.mic
+                    ),
                     contentDescription = null,
-                    modifier = Modifier.size(64.dp),
+                    modifier = Modifier.size(56.dp),
                     tint = MaterialTheme.colorScheme.onPrimary,
                 )
             }
         }
 
-        Text(
-            text = stringResource(R.string.tap_to_recognize),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = stringResource(
+                    if (currentMode == RecognitionMode.SING) R.string.sing_to_search else R.string.listen_to_music
+                ),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(
+                    if (currentMode == RecognitionMode.SING) R.string.sing_to_search_desc else R.string.listen_to_music_desc
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Secondary Option Card
+        if (currentMode == RecognitionMode.SONG) {
+            Surface(
+                onClick = { onModeChanged(RecognitionMode.SING) },
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxWidth(0.92f),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.music_note),
+                            contentDescription = null,
+                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.sing_to_search),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = stringResource(R.string.sing_to_search_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    Icon(
+                        painter = painterResource(R.drawable.arrow_forward),
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            Surface(
+                onClick = {
+                    if (!HumSearchHelper.launch(context)) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.hum_not_supported),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                },
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxWidth(0.92f),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.secondaryContainer),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.search),
+                            contentDescription = null,
+                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.hum_to_search),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = stringResource(R.string.hum_to_search_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    Icon(
+                        painter = painterResource(R.drawable.arrow_forward),
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun ListeningState(onCancel: () -> Unit) {
+private fun ListeningState(
+    mode: RecognitionMode,
+    heardLyrics: String?,
+    onCancel: () -> Unit,
+) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f,
@@ -363,7 +627,6 @@ private fun ListeningState(onCancel: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
-        // Container large enough for scaled animation (200dp * 1.2 = 240dp)
         Box(
             modifier = Modifier.size(260.dp),
             contentAlignment = Alignment.Center,
@@ -399,7 +662,9 @@ private fun ListeningState(onCancel: () -> Unit) {
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    painter = painterResource(R.drawable.mic),
+                    painter = painterResource(
+                        if (mode == RecognitionMode.SING) R.drawable.music_note else R.drawable.mic
+                    ),
                     contentDescription = null,
                     modifier = Modifier.size(64.dp),
                     tint = MaterialTheme.colorScheme.onPrimary,
@@ -407,11 +672,38 @@ private fun ListeningState(onCancel: () -> Unit) {
             }
         }
 
-        Text(
-            text = stringResource(R.string.listening),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = stringResource(
+                    if (mode == RecognitionMode.SING) R.string.singing_listening else R.string.listening
+                ),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+
+            if (mode == RecognitionMode.SING) {
+                if (!heardLyrics.isNullOrBlank()) {
+                    Text(
+                        text = "“$heardLyrics”",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                    )
+                } else {
+                    Text(
+                        text = stringResource(R.string.singing_listening_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
 
         OutlinedButton(onClick = onCancel) {
             Text(stringResource(R.string.cancel))
@@ -420,7 +712,7 @@ private fun ListeningState(onCancel: () -> Unit) {
 }
 
 @Composable
-private fun ProcessingState() {
+private fun ProcessingState(mode: RecognitionMode = RecognitionMode.SONG) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(24.dp),
@@ -471,7 +763,9 @@ private fun ProcessingState() {
         }
 
         Text(
-            text = stringResource(R.string.processing),
+            text = stringResource(
+                if (mode == RecognitionMode.SING) R.string.singing_processing else R.string.processing
+            ),
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurface,
         )
@@ -598,16 +892,21 @@ private fun SuccessState(
 @Composable
 private fun NoMatchState(
     message: String,
+    currentMode: RecognitionMode,
+    onSwitchToSingMode: () -> Unit,
+    onSwitchToSongMode: () -> Unit,
     onTryAgain: () -> Unit,
 ) {
+    val context = LocalContext.current
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Box(
             modifier =
                 Modifier
-                    .size(120.dp)
+                    .size(110.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.errorContainer),
             contentAlignment = Alignment.Center,
@@ -615,7 +914,7 @@ private fun NoMatchState(
             Icon(
                 painter = painterResource(R.drawable.close),
                 contentDescription = null,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(44.dp),
                 tint = MaterialTheme.colorScheme.onErrorContainer,
             )
         }
@@ -634,6 +933,67 @@ private fun NoMatchState(
             modifier = Modifier.padding(horizontal = 32.dp),
         )
 
+        // Suggest opposite mode or Singing
+        if (currentMode == RecognitionMode.SONG) {
+            Surface(
+                onClick = onSwitchToSingMode,
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .padding(horizontal = 8.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.music_note),
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.sing_to_search_desc),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+        } else {
+            Surface(
+                onClick = onSwitchToSongMode,
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .padding(horizontal = 8.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.mic),
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.secondary,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.listen_to_music_desc),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+            }
+        }
+
         Button(onClick = onTryAgain) {
             Icon(
                 painter = painterResource(R.drawable.refresh),
@@ -649,16 +1009,18 @@ private fun NoMatchState(
 @Composable
 private fun ErrorState(
     message: String,
+    isSingMode: Boolean = false,
+    onLaunchVoiceDialog: () -> Unit = {},
     onTryAgain: () -> Unit,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Box(
             modifier =
                 Modifier
-                    .size(120.dp)
+                    .size(110.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.errorContainer),
             contentAlignment = Alignment.Center,
@@ -666,7 +1028,7 @@ private fun ErrorState(
             Icon(
                 painter = painterResource(R.drawable.error),
                 contentDescription = null,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(44.dp),
                 tint = MaterialTheme.colorScheme.onErrorContainer,
             )
         }
@@ -685,6 +1047,18 @@ private fun ErrorState(
             modifier = Modifier.padding(horizontal = 32.dp),
         )
 
+        if (isSingMode) {
+            FilledTonalButton(onClick = onLaunchVoiceDialog) {
+                Icon(
+                    painter = painterResource(R.drawable.mic),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Use Voice Input")
+            }
+        }
+
         Button(onClick = onTryAgain) {
             Icon(
                 painter = painterResource(R.drawable.refresh),
@@ -694,5 +1068,43 @@ private fun ErrorState(
             Spacer(modifier = Modifier.width(8.dp))
             Text(stringResource(R.string.try_again))
         }
+    }
+}
+
+object HumSearchHelper {
+    fun launch(context: android.content.Context): Boolean {
+        val intents = listOf(
+            Intent("com.google.android.googlequicksearchbox.MUSIC_SEARCH").apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            },
+            Intent().apply {
+                setClassName(
+                    "com.google.android.googlequicksearchbox",
+                    "com.google.android.googlequicksearchbox.SoundSearchActivity",
+                )
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            },
+            Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+                )
+                putExtra("android.speech.extra.GET_AUDIO_SOUND_SEARCH", true)
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Hum or sing to search...")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            },
+            Intent(Intent.ACTION_VOICE_COMMAND).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            },
+        )
+
+        for (intent in intents) {
+            try {
+                context.startActivity(intent)
+                return true
+            } catch (_: Exception) {
+            }
+        }
+        return false
     }
 }

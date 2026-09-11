@@ -230,7 +230,8 @@ internal fun LyricsShareDialog(
     arts: String,
     songId: String,
     onDismiss: () -> Unit,
-    onShareAsImage: () -> Unit
+    onShareAsImage: () -> Unit,
+    onShareAsVideo: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     BasicAlertDialog(onDismissRequest = onDismiss) {
@@ -270,6 +271,19 @@ internal fun LyricsShareDialog(
                     Icon(painterResource(R.drawable.share), null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
                     Text(stringResource(R.string.share_as_image), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+                }
+
+                if (onShareAsVideo != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            onShareAsVideo()
+                        }.padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(painterResource(R.drawable.content_cut), null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(12.dp))
+                        Text(stringResource(R.string.share_as_video), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+                    }
                 }
                 
                 Row(

@@ -1067,10 +1067,48 @@
     <string name="clip_end_time">End</string>
     <string name="clip_duration">Duration: %s</string>
     <string name="clip_share_button">Share Clip</string>
+    <string name="clip_share_audio_button">Send Audio</string>
+    <string name="clip_share_video_button">Send Video</string>
+    <string name="share_as_video">Share as video</string>
+    <string name="video_preview_title">Video Preview</string>
+    <string name="video_theme_style">Theme &amp; Style</string>
+    <string name="video_bg_gradient">Gradient</string>
+    <string name="video_bg_blur">Blur</string>
+    <string name="video_bg_solid">Solid</string>
+    <string name="pause_preview">Pause preview</string>
     <string name="clip_preparing">Creating audio clip…</string>
+    <string name="clip_creating_video">Creating video (%d%%)…</string>
     <string name="clip_downloading">Downloading audio…</string>
     <string name="clip_failed">Failed to create audio clip: %s</string>
+    <string name="clip_video_failed">Failed to create video: %s</string>
     <string name="clip_preview">Preview clip</string>
+
+    <!-- Download Location Settings -->
+    <string name="download_location">Download location</string>
+    <string name="download_location_desc">Choose where downloaded music is saved</string>
+    <string name="download_folder_default">Default (Internal storage)</string>
+    <string name="download_folder_external">External app storage</string>
+    <string name="download_folder_music">Music folder (JOY MUSIC)</string>
+    <string name="download_folder_custom">Choose custom folder…</string>
+    <string name="download_folder_reset">Reset to default</string>
+    <string name="download_folder_updated">Download location updated</string>
+    <string name="download_folder_not_writable">Selected folder is not writable. Defaulting to internal storage.</string>
+
+    <!-- Hum / Sing to Search Strings -->
+    <string name="hum_to_search">Hum to Search</string>
+    <string name="hum_to_search_desc">Hum or sing a melody to identify</string>
+    <string name="listen_to_music">Listen to Music</string>
+    <string name="listen_to_music_desc">Identify music playing around you</string>
+    <string name="hum_suggestion">Humming or singing? Try Hum to Search</string>
+    <string name="hum_not_supported">Google Hum Search is not available on this device</string>
+    <string name="sing_to_search">Sing to Search</string>
+    <string name="sing_to_search_desc">Sing or speak lyrics to find any song</string>
+    <string name="sing_mode">Sing Lyrics</string>
+    <string name="song_mode">Listen Song</string>
+    <string name="singing_listening">Listening to lyrics…</string>
+    <string name="singing_listening_desc">Sing 2–3 lines clearly into the mic</string>
+    <string name="singing_processing">Finding matching song…</string>
+    <string name="sing_try_again">Try singing again</string>
 </resources>
 
 

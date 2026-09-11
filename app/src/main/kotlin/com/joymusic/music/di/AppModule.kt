@@ -15,11 +15,13 @@ import androidx.media3.datasource.cache.ContentMetadataMutations
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.NoOpCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import com.joymusic.music.constants.DownloadLocationKey
 import com.joymusic.music.constants.MaxSongCacheSizeKey
 import com.joymusic.music.db.InternalDatabase
 import com.joymusic.music.db.MusicDatabase
 import com.joymusic.music.listentogether.ListenTogetherClient
 import com.joymusic.music.listentogether.ListenTogetherManager
+import com.joymusic.music.utils.DownloadFolderHelper
 import com.joymusic.music.utils.dataStore
 import com.joymusic.music.utils.get
 import dagger.Module
@@ -189,8 +191,10 @@ object AppModule {
         databaseProvider: DatabaseProvider,
     ): Cache =
         LazyCache {
+            val customPath = context.dataStore[DownloadLocationKey]
+            val downloadDir = DownloadFolderHelper.getDownloadFolder(context, customPath)
             SimpleCache(
-                context.filesDir.resolve("download"),
+                downloadDir,
                 NoOpCacheEvictor(),
                 databaseProvider,
             )

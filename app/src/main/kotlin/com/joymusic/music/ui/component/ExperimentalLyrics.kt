@@ -844,6 +844,8 @@ fun ExperimentalLyrics(
         }
     }
 
+    var showAudioClipDialog by remember { mutableStateOf(false) }
+
     if (showShareDialog && shareDialogData != null) {
         val (txt, title, arts) = shareDialogData!!
         LyricsShareDialog(
@@ -852,7 +854,24 @@ fun ExperimentalLyrics(
             onShareAsImage = {
                 showShareDialog = false
                 showColorPickerDialog = true
+            },
+            onShareAsVideo = {
+                showShareDialog = false
+                showAudioClipDialog = true
             }
+        )
+    }
+
+    val currentMetadata = mediaMetadata
+    if (showAudioClipDialog && currentMetadata != null) {
+        AudioClipDialog(
+            isVisible = showAudioClipDialog,
+            songId = currentMetadata.id,
+            title = currentMetadata.title,
+            artist = currentMetadata.artists.joinToString { it.name },
+            thumbnailUrl = currentMetadata.thumbnailUrl,
+            durationSeconds = currentMetadata.duration,
+            onDismiss = { showAudioClipDialog = false },
         )
     }
 

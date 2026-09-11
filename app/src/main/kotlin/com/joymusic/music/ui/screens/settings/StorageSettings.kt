@@ -5,22 +5,33 @@
 
 package com.joymusic.music.ui.screens.settings
 
+import android.content.Intent
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -35,11 +46,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import coil3.SingletonImageLoader
@@ -50,6 +65,7 @@ import com.joymusic.music.LocalDatabase
 import com.joymusic.music.LocalPlayerAwareWindowInsets
 import com.joymusic.music.LocalPlayerConnection
 import com.joymusic.music.R
+import com.joymusic.music.constants.DownloadLocationKey
 import com.joymusic.music.constants.EnableSongCacheKey
 import com.joymusic.music.constants.MaxImageCacheSizeKey
 import com.joymusic.music.constants.MaxSongCacheSizeKey
@@ -60,6 +76,7 @@ import com.joymusic.music.ui.component.Material3SettingsGroup
 import com.joymusic.music.ui.component.Material3SettingsItem
 import android.text.format.Formatter
 import com.joymusic.music.ui.utils.backToMain
+import com.joymusic.music.utils.DownloadFolderHelper
 import com.joymusic.music.utils.rememberPreference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -96,6 +113,38 @@ fun StorageSettings(
         key = EnableSongCacheKey,
         defaultValue = true
     )
+
+    val (downloadLocation, onDownloadLocationChange) = rememberPreference(
+        key = DownloadLocationKey,
+        defaultValue = ""
+    )
+    var showDownloadLocationDialog by remember { mutableStateOf(false) }
+
+    val openDocumentTreeLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
+
+            val resolvedPath = DownloadFolderHelper.uriToPath(uri)
+            if (resolvedPath != null) {
+                val testFile = File(resolvedPath)
+                if (testFile.canWrite() || testFile.mkdirs()) {
+                    onDownloadLocationChange(resolvedPath)
+                    Toast.makeText(context, R.string.download_folder_updated, Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, R.string.download_folder_not_writable, Toast.LENGTH_LONG).show()
+                }
+            } else {
+                Toast.makeText(context, R.string.download_folder_not_writable, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     var clearDownloads by remember { mutableStateOf(false) }
     var clearCacheDialog by remember { mutableStateOf(false) }
@@ -168,6 +217,195 @@ fun StorageSettings(
             delay(500)
             downloadCacheSize = tryOrNull { downloadCache.cacheSpace } ?: 0
         }
+    }
+
+    if (showDownloadLocationDialog) {
+        AlertDialog(
+            onDismissRequest = { showDownloadLocationDialog = false },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.download),
+                    contentDescription = null,
+                )
+            },
+            title = {
+                Text(stringResource(R.string.download_location))
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = stringResource(R.string.download_location_desc),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    val defaultPath = remember { DownloadFolderHelper.getDefaultDownloadFolder(context).absolutePath }
+                    val extAppPath = remember { DownloadFolderHelper.getExternalAppDownloadFolder(context).absolutePath }
+                    val publicMusicPath = remember { DownloadFolderHelper.getPublicMusicDownloadFolder(context).absolutePath }
+
+                    // Option 1: Default Internal Storage
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                onDownloadLocationChange("")
+                                Toast.makeText(context, R.string.download_folder_updated, Toast.LENGTH_SHORT).show()
+                                showDownloadLocationDialog = false
+                            }
+                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                    ) {
+                        RadioButton(
+                            selected = downloadLocation.isBlank() || downloadLocation == defaultPath,
+                            onClick = null,
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = stringResource(R.string.download_folder_default),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = defaultPath,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+
+                    // Option 2: External App Storage
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                onDownloadLocationChange(extAppPath)
+                                Toast.makeText(context, R.string.download_folder_updated, Toast.LENGTH_SHORT).show()
+                                showDownloadLocationDialog = false
+                            }
+                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                    ) {
+                        RadioButton(
+                            selected = downloadLocation == extAppPath,
+                            onClick = null,
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = stringResource(R.string.download_folder_external),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = extAppPath,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+
+                    // Option 3: Public Music Folder
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                onDownloadLocationChange(publicMusicPath)
+                                Toast.makeText(context, R.string.download_folder_updated, Toast.LENGTH_SHORT).show()
+                                showDownloadLocationDialog = false
+                            }
+                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                    ) {
+                        RadioButton(
+                            selected = downloadLocation == publicMusicPath,
+                            onClick = null,
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = stringResource(R.string.download_folder_music),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = publicMusicPath,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+
+                    // Option 4: Custom Folder (SAF)
+                    val isCustomSelected = downloadLocation.isNotBlank() &&
+                            downloadLocation != defaultPath &&
+                            downloadLocation != extAppPath &&
+                            downloadLocation != publicMusicPath
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                showDownloadLocationDialog = false
+                                openDocumentTreeLauncher.launch(null)
+                            }
+                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                    ) {
+                        RadioButton(
+                            selected = isCustomSelected,
+                            onClick = null,
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = stringResource(R.string.download_folder_custom),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            if (isCustomSelected) {
+                                Text(
+                                    text = downloadLocation,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDownloadLocationDialog = false }) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+            dismissButton = {
+                if (downloadLocation.isNotBlank()) {
+                    TextButton(
+                        onClick = {
+                            onDownloadLocationChange("")
+                            Toast.makeText(context, R.string.download_folder_updated, Toast.LENGTH_SHORT).show()
+                            showDownloadLocationDialog = false
+                        }
+                    ) {
+                        Text(stringResource(R.string.download_folder_reset))
+                    }
+                }
+            },
+        )
     }
 
     if (clearDownloads) {
@@ -305,6 +543,16 @@ fun StorageSettings(
                         title = { Text(stringResource(R.string.downloaded_songs)) },
                         description = {
                             Text(text = Formatter.formatShortFileSize(context, downloadCacheSize))
+                        },
+                    ),
+                    Material3SettingsItem(
+                        icon = painterResource(R.drawable.download),
+                        title = { Text(stringResource(R.string.download_location)) },
+                        description = {
+                            Text(text = DownloadFolderHelper.getFolderDisplayName(context, downloadLocation))
+                        },
+                        onClick = {
+                            showDownloadLocationDialog = true
                         },
                     ),
                     Material3SettingsItem(
