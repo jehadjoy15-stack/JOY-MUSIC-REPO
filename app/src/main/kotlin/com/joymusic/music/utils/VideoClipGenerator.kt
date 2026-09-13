@@ -41,6 +41,7 @@ import coil3.request.allowHardware
 import coil3.toBitmap
 import com.joymusic.music.R
 import com.joymusic.music.lyrics.LyricsEntry
+import com.joymusic.music.lyrics.WordTimestamp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -270,7 +271,11 @@ object VideoClipGenerator {
             }
             val roundedAppLogo = getRoundedCornerBitmap(appLogoBitmap, 40, 40, 10f)
 
-            val lyricLines = lyricsEntries.filter { it.text.isNotBlank() }
+            val allNonBlankLyrics = lyricsEntries.filter { it.text.isNotBlank() }
+            val activeAtStartIdx = allNonBlankLyrics.indexOfLast { it.time <= startMs }
+            val lyricLines = allNonBlankLyrics.filterIndexed { index, line ->
+                (index == activeAtStartIdx) || (line.time in startMs..endMs)
+            }.ifEmpty { allNonBlankLyrics }
 
             // Reusable canvas and bitmap for frame rendering
             val frameBitmap = createBitmap(VIDEO_WIDTH, VIDEO_HEIGHT)
@@ -408,12 +413,14 @@ object VideoClipGenerator {
 
                                     canvas.save()
                                     canvas.scale(scale, scale, VIDEO_WIDTH / 2f, lineY - 8f)
-                                    drawWrappedLyricText(
+                                    drawKaraokeLyricText(
                                         canvas = canvas,
-                                        text = rawText,
+                                        line = line,
+                                        currentFrameTimeMs = currentFrameTimeMs,
                                         centerX = VIDEO_WIDTH / 2f,
                                         centerY = lineY,
-                                        paint = lyricPaint,
+                                        isCenterActive = isCenterActive,
+                                        alpha = alpha,
                                         maxWidth = VIDEO_WIDTH - 80f,
                                     )
                                     canvas.restore()
@@ -1231,6 +1238,170 @@ object VideoClipGenerator {
                 val subLineSpacing = paint.textSize * 1.34f
                 canvas.drawText(line1, centerX, centerY - (subLineSpacing * 0.52f), paint)
                 canvas.drawText(line2, centerX, centerY + (subLineSpacing * 0.52f), paint)
+            }
+        }
+    }
+
+    /**
+     * Draws a lyric line with word-by-word luminous karaoke highlight effect (Apple Music / BetterLyrics style)
+     * when word timestamps exist.
+     */
+    private fun drawKaraokeLyricText(
+        canvas: Canvas,
+        line: LyricsEntry,
+        currentFrameTimeMs: Long,
+        centerX: Float,
+        centerY: Float,
+        isCenterActive: Boolean,
+        alpha: Float,
+        maxWidth: Float,
+    ) {
+        val words = line.words
+        if (words.isNullOrEmpty()) {
+            val lyricPaint = TextPaint().apply {
+                color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
+                textSize = 33f
+                typeface = Typeface.create(
+                    Typeface.DEFAULT,
+                    if (isCenterActive) Typeface.BOLD else Typeface.NORMAL
+                )
+                isAntiAlias = true
+                textAlign = Paint.Align.CENTER
+                val shadowAlpha = if (isCenterActive) (170 * alpha).toInt() else (65 * alpha).toInt()
+                setShadowLayer(
+                    if (isCenterActive) 14f else 8f,
+                    0f,
+                    if (isCenterActive) 4f else 2f,
+                    Color.argb(shadowAlpha, 0, 0, 0)
+                )
+            }
+            drawWrappedLyricText(
+                canvas = canvas,
+                text = line.text,
+                centerX = centerX,
+                centerY = centerY,
+                paint = lyricPaint,
+                maxWidth = maxWidth,
+            )
+            return
+        }
+
+        // Word-level karaoke rendering
+        val dimPaint = TextPaint().apply {
+            color = Color.argb((alpha * 95).toInt(), 255, 255, 255)
+            textSize = 33f
+            typeface = Typeface.create(
+                Typeface.DEFAULT,
+                if (isCenterActive) Typeface.BOLD else Typeface.NORMAL
+            )
+            isAntiAlias = true
+            setShadowLayer(8f, 0f, 2f, Color.argb((50 * alpha).toInt(), 0, 0, 0))
+        }
+
+        val activePaint = TextPaint().apply {
+            color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
+            textSize = 33f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            isAntiAlias = true
+            // Radiant glow around sung words (warm white / luminous halo)
+            setShadowLayer(16f, 0f, 0f, Color.argb((210 * alpha).toInt(), 255, 230, 240))
+        }
+
+        val linesOfWords = mutableListOf<MutableList<Pair<WordTimestamp, Float>>>()
+        var currentWordLine = mutableListOf<Pair<WordTimestamp, Float>>()
+        var currentLineWidth = 0f
+
+        for (word in words) {
+            val wordText = word.text + if (word.hasTrailingSpace) " " else ""
+            val wWidth = dimPaint.measureText(wordText)
+            if (currentLineWidth + wWidth > maxWidth && currentWordLine.isNotEmpty()) {
+                linesOfWords.add(currentWordLine)
+                currentWordLine = mutableListOf()
+                currentLineWidth = 0f
+            }
+            currentWordLine.add(word to wWidth)
+            currentLineWidth += wWidth
+        }
+        if (currentWordLine.isNotEmpty()) {
+            linesOfWords.add(currentWordLine)
+        }
+
+        val numLines = linesOfWords.size
+        val lineHeight = dimPaint.textSize * 1.34f
+        val startY = if (numLines <= 1) centerY else centerY - ((numLines - 1) * lineHeight / 2f)
+
+        linesOfWords.forEachIndexed { lineIdx, wordList ->
+            val totalLineWidth = wordList.sumOf { it.second.toDouble() }.toFloat()
+            var curX = centerX - (totalLineWidth / 2f)
+            val curY = startY + (lineIdx * lineHeight)
+
+            for ((word, wWidth) in wordList) {
+                val wordText = word.text + if (word.hasTrailingSpace) " " else ""
+                val wordStartMs = (word.startTime * 1000).toLong()
+                val wordEndMs = (word.endTime * 1000).toLong()
+
+                val progress = when {
+                    !isCenterActive -> 0f
+                    currentFrameTimeMs < wordStartMs -> 0f
+                    currentFrameTimeMs >= wordEndMs -> 1f
+                    else -> {
+                        val duration = (wordEndMs - wordStartMs).coerceAtLeast(1L)
+                        ((currentFrameTimeMs - wordStartMs).toFloat() / duration).coerceIn(0f, 1f)
+                    }
+                }
+
+                val charCount = wordText.length.coerceAtLeast(1)
+                var charX = curX
+
+                for (cIdx in 0 until wordText.length) {
+                    val charStr = wordText[cIdx].toString()
+                    val charW = dimPaint.measureText(charStr)
+
+                    val charLp = if (!isCenterActive) 0f
+                    else ((progress - (cIdx.toFloat() / charCount)) * charCount).coerceIn(0f, 1f)
+
+                    // Draw dimmed base character
+                    canvas.drawText(charStr, charX, curY, dimPaint)
+
+                    // Draw butter-smooth progressive light sweep across this exact alphabet with the tune
+                    if (charLp >= 1f) {
+                        canvas.drawText(charStr, charX, curY, activePaint)
+                    } else if (charLp > 0f) {
+                        val fXL = charW * charLp
+                        val eW = (charW * 0.5f).coerceAtLeast(1.5f)
+                        val sWL = (fXL - eW).coerceAtLeast(0f)
+
+                        // 1. Solid light behind the wave front
+                        if (sWL > 0f) {
+                            canvas.save()
+                            canvas.clipRect(charX, curY - dimPaint.textSize * 1.3f, charX + sWL, curY + dimPaint.textSize * 0.5f)
+                            canvas.drawText(charStr, charX, curY, activePaint)
+                            canvas.restore()
+                        }
+
+                        // 2. Liquid light soft gradient sweep head (advancing with tune)
+                        for (j in 0 until 8) {
+                            val start = sWL + (j * eW / 8f)
+                            val end = (sWL + ((j + 1) * eW / 8f) + 0.5f).coerceAtMost(fXL)
+                            if (end > start) {
+                                val sliceAlpha = (1f - (j + 0.5f) / 8f).coerceIn(0f, 1f)
+                                val slicePaint = TextPaint(activePaint).apply {
+                                    color = Color.argb((alpha * sliceAlpha * 255).toInt(), 255, 255, 255)
+                                    val glowAlpha = (alpha * sliceAlpha * 220).toInt().coerceIn(0, 255)
+                                    setShadowLayer(16f * sliceAlpha, 0f, 0f, Color.argb(glowAlpha, 255, 230, 240))
+                                }
+                                canvas.save()
+                                canvas.clipRect(charX + start, curY - dimPaint.textSize * 1.3f, charX + end, curY + dimPaint.textSize * 0.5f)
+                                canvas.drawText(charStr, charX, curY, slicePaint)
+                                canvas.restore()
+                            }
+                        }
+                    }
+
+                    charX += charW
+                }
+
+                curX += wWidth
             }
         }
     }

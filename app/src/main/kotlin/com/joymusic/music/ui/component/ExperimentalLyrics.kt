@@ -312,6 +312,9 @@ fun ExperimentalLyrics(
     var showProgressDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
     var showColorPickerDialog by remember { mutableStateOf(false) }
+    var showAudioClipDialog by remember { mutableStateOf(false) }
+    var selectedLyricsStartSec by remember { mutableStateOf<Float?>(null) }
+    var selectedLyricsEndSec by remember { mutableStateOf<Float?>(null) }
     var shareDialogData by remember { mutableStateOf<Triple<String, String, String>?>(null) }
     var isSelectionModeActive by rememberSaveable { mutableStateOf(false) }
     val selectedIndices = remember { mutableStateListOf<Int>() }
@@ -819,61 +822,98 @@ fun ExperimentalLyrics(
             }
         }
 
-        LyricsActionOverlay(
-            modifier = Modifier.align(Alignment.BottomCenter),
-            isAutoScrollEnabled = isAutoScrollEnabled, isSynced = isSynced,
-            isSelectionModeActive = isSelectionModeActive, anySelected = selectedIndices.isNotEmpty(),
-            onSyncClick = latestResyncLyrics,
-            onCancelSelection = { isSelectionModeActive = false; selectedIndices.clear() },
-            onShareSelection = {
-                val text = selectedIndices.sorted().mapNotNull { lines.getOrNull(it)?.text }.joinToString("\n")
-                if (text.isNotBlank()) {
-                    shareDialogData = Triple(text, mediaMetadata?.title ?: "", mediaMetadata?.artists?.joinToString { it.name } ?: "")
-                    showShareDialog = true
-                }
-                isSelectionModeActive = false; selectedIndices.clear()
-            }
-        )
-    }
+    LyricsActionOverlay(
+        modifier = Modifier.align(Alignment.BottomCenter),
+        isAutoScrollEnabled = isAutoScrollEnabled, isSynced = isSynced,
+        isSelectionModeActive = isSelectionModeActive, anySelected = selectedIndices.isNotEmpty(),
+        onSyncClick = latestResyncLyrics,
+        onCancelSelection = { isSelectionModeActive = false; selectedIndices.clear() },
+        onShareSelection = {
+            val sortedIndices = selectedIndices.sorted()
+            val selectedLines = sortedIndices.mapNotNull { lines.getOrNull(it) }
+            val text = selectedLines.joinToString("\n") { it.text }
+            if (text.isNotBlank()) {
+                val firstLine = selectedLines.firstOrNull()
+                val lastLine = selectedLines.lastOrNull()
+                val lastIdx = sortedIndices.lastOrNull() ?: 0
 
-    if (showProgressDialog) {
-        BasicAlertDialog(onDismissRequest = {}) {
-            Card(shape = MaterialTheme.shapes.medium, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                Box(Modifier.padding(32.dp)) { Text(stringResource(R.string.generating_image) + "\n" + stringResource(R.string.please_wait)) }
+                val startMs: Long = if (firstLine != null && firstLine.time > 0L) {
+                    val firstWordStart = firstLine.words?.firstOrNull()?.startTime
+                    if (firstWordStart != null && firstWordStart > 0.0) {
+                        (firstWordStart * 1000).toLong()
+                    } else {
+                        firstLine.time
+                    }
+                } else {
+                    0L
+                }
+
+                val endMs: Long = if (lastLine != null && lastLine.time > 0L) {
+                    val nextLine = lines.getOrNull(lastIdx + 1)
+                    val lastWordEnd = lastLine.words?.lastOrNull()?.endTime
+                    if (lastWordEnd != null && lastWordEnd > 0.0) {
+                        (lastWordEnd * 1000).toLong()
+                    } else if (nextLine != null && nextLine.time > lastLine.time) {
+                        nextLine.time
+                    } else {
+                        lastLine.time + 5000L
+                    }
+                } else {
+                    startMs + 15000L
+                }
+
+                val startSec = (startMs / 1000f).coerceAtLeast(0f)
+                val endSec = (endMs / 1000f).coerceAtLeast(startSec + 3f)
+                selectedLyricsStartSec = startSec
+                selectedLyricsEndSec = endSec
+
+                shareDialogData = Triple(text, mediaMetadata?.title ?: "", mediaMetadata?.artists?.joinToString { it.name } ?: "")
+                showShareDialog = true
             }
+            isSelectionModeActive = false; selectedIndices.clear()
+        }
+    )
+}
+
+if (showProgressDialog) {
+    BasicAlertDialog(onDismissRequest = {}) {
+        Card(shape = MaterialTheme.shapes.medium, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Box(Modifier.padding(32.dp)) { Text(stringResource(R.string.generating_image) + "\n" + stringResource(R.string.please_wait)) }
         }
     }
+}
 
-    var showAudioClipDialog by remember { mutableStateOf(false) }
+if (showShareDialog && shareDialogData != null) {
+    val (txt, title, arts) = shareDialogData!!
+    LyricsShareDialog(
+        txt = txt, title = title, arts = arts, songId = mediaMetadata?.id ?: "",
+        onDismiss = { showShareDialog = false },
+        onShareAsImage = {
+            showShareDialog = false
+            showColorPickerDialog = true
+        },
+        onShareAsVideo = {
+            showShareDialog = false
+            showAudioClipDialog = true
+        }
+    )
+}
 
-    if (showShareDialog && shareDialogData != null) {
-        val (txt, title, arts) = shareDialogData!!
-        LyricsShareDialog(
-            txt = txt, title = title, arts = arts, songId = mediaMetadata?.id ?: "",
-            onDismiss = { showShareDialog = false },
-            onShareAsImage = {
-                showShareDialog = false
-                showColorPickerDialog = true
-            },
-            onShareAsVideo = {
-                showShareDialog = false
-                showAudioClipDialog = true
-            }
-        )
-    }
-
-    val currentMetadata = mediaMetadata
-    if (showAudioClipDialog && currentMetadata != null) {
-        AudioClipDialog(
-            isVisible = showAudioClipDialog,
-            songId = currentMetadata.id,
-            title = currentMetadata.title,
-            artist = currentMetadata.artists.joinToString { it.name },
-            thumbnailUrl = currentMetadata.thumbnailUrl,
-            durationSeconds = currentMetadata.duration,
-            onDismiss = { showAudioClipDialog = false },
-        )
-    }
+val currentMetadata = mediaMetadata
+if (showAudioClipDialog && currentMetadata != null) {
+    AudioClipDialog(
+        isVisible = showAudioClipDialog,
+        songId = currentMetadata.id,
+        title = currentMetadata.title,
+        artist = currentMetadata.artists.joinToString { it.name },
+        thumbnailUrl = currentMetadata.thumbnailUrl,
+        durationSeconds = currentMetadata.duration,
+        initialStartSeconds = selectedLyricsStartSec,
+        initialEndSeconds = selectedLyricsEndSec,
+        initialSelectedLyrics = shareDialogData?.first,
+        onDismiss = { showAudioClipDialog = false },
+    )
+}
 
     if (showColorPickerDialog && shareDialogData != null) {
         val (txt, title, arts) = shareDialogData!!

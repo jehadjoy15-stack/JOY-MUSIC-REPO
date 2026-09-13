@@ -22,6 +22,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -119,6 +120,12 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+enum class LyricsScriptOption {
+    ORIGINAL,
+    ROMANIZED,
+    TRANSLATION,
+}
+
 @Composable
 fun AudioClipDialog(
     isVisible: Boolean,
@@ -127,6 +134,9 @@ fun AudioClipDialog(
     artist: String,
     thumbnailUrl: String?,
     durationSeconds: Int,
+    initialStartSeconds: Float? = null,
+    initialEndSeconds: Float? = null,
+    initialSelectedLyrics: String? = null,
     onDismiss: () -> Unit,
 ) {
     if (!isVisible) return
@@ -142,9 +152,11 @@ fun AudioClipDialog(
         if (durationSeconds > 0) durationSeconds.toFloat() else 180f
     }
 
-    var sliderRange by remember(songId, totalDuration) {
-        val initialEnd = minOf(30f, totalDuration)
-        mutableStateOf(0f..initialEnd)
+    var sliderRange by remember(songId, totalDuration, initialStartSeconds, initialEndSeconds) {
+        val start = (initialStartSeconds ?: 0f).coerceIn(0f, totalDuration)
+        val defaultEnd = if (initialEndSeconds != null) initialEndSeconds else minOf(start + 30f, totalDuration)
+        val end = defaultEnd.coerceIn(start + 1f, totalDuration)
+        mutableStateOf(start..end)
     }
 
     var isSharingAudio by remember { mutableStateOf(false) }
@@ -155,14 +167,19 @@ fun AudioClipDialog(
     var isPreparingPreview by remember { mutableStateOf(false) }
     var sourceFile by remember(songId) { mutableStateOf<File?>(null) }
     var isPreviewPlaying by remember { mutableStateOf(false) }
-    var previewCurrentPositionMs by remember { mutableLongStateOf(0L) }
+    var previewCurrentPositionMs by remember { mutableLongStateOf((sliderRange.start * 1000).toLong()) }
     var lyricsEntries by remember(songId) { mutableStateOf<List<LyricsEntry>>(emptyList()) }
+    var selectedScriptOption by remember { mutableStateOf(LyricsScriptOption.ORIGINAL) }
+    var isRomanizedAvailable by remember { mutableStateOf(false) }
+    var isTranslatedAvailable by remember { mutableStateOf(false) }
 
     // Video Theme Customization
     val paletteColors = remember { mutableStateListOf<Color>() }
     var selectedBgStyle by remember { mutableStateOf(LyricsBackgroundStyle.GRADIENT) }
     var selectedBgColor by remember { mutableStateOf<Color?>(null) }
-    var selectedTabIndex by remember { mutableIntStateOf(0) }
+    var selectedTabIndex by remember(initialStartSeconds) {
+        mutableIntStateOf(if (initialStartSeconds != null) 1 else 0)
+    }
 
     LaunchedEffect(thumbnailUrl) {
         if (thumbnailUrl != null) {
@@ -220,6 +237,78 @@ fun AudioClipDialog(
                 }
             } catch (_: Exception) {}
         }
+    }
+
+    // Auto-romanize and detect available multi-script options in the background
+    LaunchedEffect(lyricsEntries) {
+        if (lyricsEntries.isNotEmpty()) {
+            withContext(Dispatchers.Default) {
+                val allSupportedLanguages = listOf(
+                    "Hindi",
+                    "Punjabi",
+                    "Japanese",
+                    "Korean",
+                    "Chinese",
+                    "Ukrainian",
+                    "Russian",
+                    "Serbian",
+                    "Bulgarian",
+                    "Belarusian",
+                    "Kyrgyz",
+                    "Macedonian"
+                )
+                val fullText = lyricsEntries.joinToString("\n") { it.text }
+                var anyRomanized = false
+                var anyTranslated = false
+
+                lyricsEntries.forEach { entry ->
+                    if (entry.romanizedTextFlow.value == null && entry.text.isNotBlank()) {
+                        val romanized = LyricsUtils.romanize(
+                            text = fullText,
+                            line = entry.text,
+                            enabledLanguages = allSupportedLanguages,
+                            romanizeCyrillicByLine = true,
+                        )
+                        if (!romanized.isNullOrBlank() && romanized.trim() != entry.text.trim()) {
+                            entry.romanizedTextFlow.value = romanized
+                        }
+                    }
+                    if (!entry.romanizedTextFlow.value.isNullOrBlank()) {
+                        anyRomanized = true
+                    }
+                    if (!entry.translatedTextFlow.value.isNullOrBlank()) {
+                        anyTranslated = true
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    isRomanizedAvailable = anyRomanized
+                    isTranslatedAvailable = anyTranslated
+                }
+            }
+        }
+    }
+
+    val displayedLyricsEntries = remember(lyricsEntries, selectedScriptOption, isRomanizedAvailable, isTranslatedAvailable) {
+        lyricsEntries.map { entry ->
+            val text = when (selectedScriptOption) {
+                LyricsScriptOption.ROMANIZED -> entry.romanizedTextFlow.value?.takeIf { it.isNotBlank() } ?: entry.text
+                LyricsScriptOption.TRANSLATION -> entry.translatedTextFlow.value?.takeIf { it.isNotBlank() } ?: entry.text
+                LyricsScriptOption.ORIGINAL -> entry.text
+            }
+            entry.copy(text = text)
+        }
+    }
+
+    val clipDurationLyrics = remember(displayedLyricsEntries, sliderRange) {
+        val startMs = (sliderRange.start * 1000).toLong()
+        val endMs = (sliderRange.endInclusive * 1000).toLong()
+        val nonBlank = displayedLyricsEntries.filter { it.text.isNotBlank() }
+        val activeAtStart = nonBlank.indexOfLast { it.time <= startMs }
+        val filtered = nonBlank.filterIndexed { index, line ->
+            (index == activeAtStart) || (line.time in startMs..endMs)
+        }
+        if (filtered.isNotEmpty()) filtered else nonBlank
     }
 
     // Instant streaming & audio-focused ExoPlayer for local preview
@@ -566,6 +655,40 @@ fun AudioClipDialog(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
+                        // Lyrics Script Selector (Original vs English/Romanized vs Translation)
+                        if (isRomanizedAvailable || isTranslatedAvailable) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(bottom = 6.dp),
+                            ) {
+                                FilterChip(
+                                    selected = selectedScriptOption == LyricsScriptOption.ORIGINAL,
+                                    onClick = { selectedScriptOption = LyricsScriptOption.ORIGINAL },
+                                    label = { Text(stringResource(R.string.video_script_original), fontSize = 12.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(),
+                                )
+
+                                if (isRomanizedAvailable) {
+                                    FilterChip(
+                                        selected = selectedScriptOption == LyricsScriptOption.ROMANIZED,
+                                        onClick = { selectedScriptOption = LyricsScriptOption.ROMANIZED },
+                                        label = { Text(stringResource(R.string.video_script_romanized), fontSize = 12.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(),
+                                    )
+                                }
+
+                                if (isTranslatedAvailable) {
+                                    FilterChip(
+                                        selected = selectedScriptOption == LyricsScriptOption.TRANSLATION,
+                                        onClick = { selectedScriptOption = LyricsScriptOption.TRANSLATION },
+                                        label = { Text(stringResource(R.string.video_script_translated), fontSize = 12.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(),
+                                    )
+                                }
+                            }
+                        }
+
                         // Style Chips
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -626,7 +749,7 @@ fun AudioClipDialog(
                                 bgStyle = selectedBgStyle,
                                 bgColor = selectedBgColor,
                                 currentTimeMs = previewCurrentPositionMs,
-                                lyricsEntries = lyricsEntries,
+                                lyricsEntries = clipDurationLyrics,
                                 isPlaying = isPreviewPlaying,
                                 modifier = Modifier.fillMaxSize(),
                             )
@@ -857,7 +980,7 @@ fun AudioClipDialog(
                                         thumbnailUrl = thumbnailUrl,
                                         startMs = startMs,
                                         endMs = endMs,
-                                        lyricsEntries = lyricsEntries,
+                                        lyricsEntries = clipDurationLyrics,
                                         backgroundStyle = selectedBgStyle,
                                         customBackgroundColor = selectedBgColor?.toArgb(),
                                         downloadCache = downloadCache,
@@ -1117,28 +1240,76 @@ private fun VideoReelPreviewCard(
                             )
                         }
 
-                        // Main Active Line (Deep Solid White, Apple Music Style only when active)
-                        val activeText = lyricLines[currentIdx].text
+                        // Main Active Line (Word-by-word luminous karaoke glow or deep solid white)
+                        val activeEntry = lyricLines[currentIdx]
                         val isIntro = currentTimeMs < (lyricLines.firstOrNull()?.time ?: 0L)
                         val isCenterActive = !isIntro
-                        Text(
-                            text = activeText,
-                            style = TextStyle(
-                                color = if (isCenterActive) Color.White else Color.White.copy(alpha = 0.38f),
-                                fontSize = 12.sp,
-                                fontWeight = if (isCenterActive) FontWeight.Bold else FontWeight.Medium,
-                                textAlign = TextAlign.Center,
-                                shadow = if (isCenterActive) {
-                                    androidx.compose.ui.graphics.Shadow(
-                                        color = Color.Black.copy(alpha = 0.6f),
-                                        blurRadius = 8f,
-                                    )
-                                } else null,
-                            ),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(vertical = 2.dp),
-                        )
+                        val words = activeEntry.words
+
+                        if (isCenterActive && !words.isNullOrEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.Center,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                            ) {
+                                words.forEach { word ->
+                                    val wordStartMs = (word.startTime * 1000).toLong()
+                                    val wordEndMs = (word.endTime * 1000).toLong()
+                                    val wordDuration = (wordEndMs - wordStartMs).coerceAtLeast(1L)
+                                    val wordProgress = when {
+                                        currentTimeMs < wordStartMs -> 0f
+                                        currentTimeMs >= wordEndMs -> 1f
+                                        else -> ((currentTimeMs - wordStartMs).toFloat() / wordDuration).coerceIn(0f, 1f)
+                                    }
+
+                                    val wordText = word.text + if (word.hasTrailingSpace) " " else ""
+                                    val charCount = wordText.length.coerceAtLeast(1)
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        wordText.forEachIndexed { cIdx, char ->
+                                            val charLp = ((wordProgress - (cIdx.toFloat() / charCount)) * charCount).coerceIn(0f, 1f)
+                                            val charAlpha = (0.35f + 0.65f * charLp).coerceIn(0.35f, 1.0f)
+
+                                            Text(
+                                                text = char.toString(),
+                                                style = TextStyle(
+                                                    color = Color.White.copy(alpha = charAlpha),
+                                                    fontSize = 12.sp,
+                                                    fontWeight = if (charLp > 0.3f) FontWeight.Bold else FontWeight.Medium,
+                                                    shadow = if (charLp > 0.05f) {
+                                                        androidx.compose.ui.graphics.Shadow(
+                                                            color = Color(0xFFFFD1DC).copy(alpha = 0.85f * charLp),
+                                                            blurRadius = 10f * charLp,
+                                                        )
+                                                    } else null,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = activeEntry.text,
+                                style = TextStyle(
+                                    color = if (isCenterActive) Color.White else Color.White.copy(alpha = 0.38f),
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isCenterActive) FontWeight.Bold else FontWeight.Medium,
+                                    textAlign = TextAlign.Center,
+                                    shadow = if (isCenterActive) {
+                                        androidx.compose.ui.graphics.Shadow(
+                                            color = Color.Black.copy(alpha = 0.6f),
+                                            blurRadius = 8f,
+                                        )
+                                    } else null,
+                                ),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(vertical = 2.dp),
+                            )
+                        }
 
                         // Upcoming Next Line (Soft Blurred / Dimmed)
                         if (currentIdx + 1 < lyricLines.size) {

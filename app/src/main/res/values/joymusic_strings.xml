@@ -1081,6 +1081,10 @@
     <string name="clip_downloading">Downloading audio…</string>
     <string name="clip_failed">Failed to create audio clip: %s</string>
     <string name="clip_video_failed">Failed to create video: %s</string>
+    <string name="video_script_title">Lyrics Script</string>
+    <string name="video_script_original">Original</string>
+    <string name="video_script_romanized">English (Romanized)</string>
+    <string name="video_script_translated">Translation</string>
     <string name="clip_preview">Preview clip</string>
 
     <!-- Download Location Settings -->

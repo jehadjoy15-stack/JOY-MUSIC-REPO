@@ -1469,6 +1469,7 @@ object LyricsUtils {
             "Korean" in enabledLanguages && isKorean(detectionText) -> romanizeKorean(line)
             "Chinese" in enabledLanguages && isChinese(detectionText) -> romanizeChinese(line)
             "Hindi" in enabledLanguages && isHindi(detectionText) -> romanizeHindi(line)
+            "Punjabi" in enabledLanguages && isPunjabi(detectionText) -> romanizePunjabi(line)
             "Ukrainian" in enabledLanguages && isUkrainian(detectionText) -> romanizeCyrillic(line, "Ukrainian")
             "Russian" in enabledLanguages && isRussian(detectionText) -> romanizeCyrillic(line, "Russian")
             "Serbian" in enabledLanguages && isSerbian(detectionText) -> romanizeCyrillic(line, "Serbian")

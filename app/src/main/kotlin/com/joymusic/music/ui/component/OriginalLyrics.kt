@@ -472,6 +472,9 @@ fun OriginalLyrics(
     var showProgressDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
     var shareDialogData by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    var showAudioClipDialog by remember { mutableStateOf(false) }
+    var selectedLyricsStartSec by remember { mutableStateOf<Float?>(null) }
+    var selectedLyricsEndSec by remember { mutableStateOf<Float?>(null) }
 
     var showColorPickerDialog by remember { mutableStateOf(false) }
     var previewBackgroundColor by remember { mutableStateOf(Color(0xFF242424)) }
@@ -1771,12 +1774,44 @@ fun OriginalLyrics(
                         onClick = {
                             if (selectedIndices.isNotEmpty()) {
                                 val sortedIndices = selectedIndices.sorted()
-                                val selectedLyricsText =
-                                    sortedIndices
-                                        .mapNotNull { lines.getOrNull(it)?.text }
-                                        .joinToString("\n")
+                                val selectedLines = sortedIndices.mapNotNull { lines.getOrNull(it) }
+                                val selectedLyricsText = selectedLines.joinToString("\n") { it.text }
 
                                 if (selectedLyricsText.isNotBlank()) {
+                                    val firstLine = selectedLines.firstOrNull()
+                                    val lastLine = selectedLines.lastOrNull()
+                                    val lastIdx = sortedIndices.lastOrNull() ?: 0
+
+                                    val startMs: Long = if (firstLine != null && firstLine.time > 0L) {
+                                        val firstWordStart = firstLine.words?.firstOrNull()?.startTime
+                                        if (firstWordStart != null && firstWordStart > 0.0) {
+                                            (firstWordStart * 1000).toLong()
+                                        } else {
+                                            firstLine.time
+                                        }
+                                    } else {
+                                        0L
+                                    }
+
+                                    val endMs: Long = if (lastLine != null && lastLine.time > 0L) {
+                                        val nextLine = lines.getOrNull(lastIdx + 1)
+                                        val lastWordEnd = lastLine.words?.lastOrNull()?.endTime
+                                        if (lastWordEnd != null && lastWordEnd > 0.0) {
+                                            (lastWordEnd * 1000).toLong()
+                                        } else if (nextLine != null && nextLine.time > lastLine.time) {
+                                            nextLine.time
+                                        } else {
+                                            lastLine.time + 5000L
+                                        }
+                                    } else {
+                                        startMs + 15000L
+                                    }
+
+                                    val startSec = (startMs / 1000f).coerceAtLeast(0f)
+                                    val endSec = (endMs / 1000f).coerceAtLeast(startSec + 3f)
+                                    selectedLyricsStartSec = startSec
+                                    selectedLyricsEndSec = endSec
+
                                     shareDialogData =
                                         Triple(
                                             selectedLyricsText,
@@ -1908,6 +1943,29 @@ fun OriginalLyrics(
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
+                        // Share as Video Row
+                        Row(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        showAudioClipDialog = true
+                                        showShareDialog = false
+                                    }.padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.content_cut),
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = stringResource(R.string.share_as_video),
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                         // Cancel Button Row
                         Row(
                             modifier =
@@ -1930,6 +1988,22 @@ fun OriginalLyrics(
                     }
                 }
             }
+        }
+
+        val currentMetadata = mediaMetadata
+        if (showAudioClipDialog && currentMetadata != null) {
+            AudioClipDialog(
+                isVisible = showAudioClipDialog,
+                songId = currentMetadata.id,
+                title = currentMetadata.title,
+                artist = currentMetadata.artists.joinToString { it.name },
+                thumbnailUrl = currentMetadata.thumbnailUrl,
+                durationSeconds = currentMetadata.duration,
+                initialStartSeconds = selectedLyricsStartSec,
+                initialEndSeconds = selectedLyricsEndSec,
+                initialSelectedLyrics = shareDialogData?.first,
+                onDismiss = { showAudioClipDialog = false },
+            )
         }
 
         if (showColorPickerDialog && shareDialogData != null) {
