@@ -10,6 +10,7 @@ import android.net.ConnectivityManager
 import androidx.core.content.getSystemService
 import androidx.core.net.toUri
 import androidx.media3.database.DatabaseProvider
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.Cache
@@ -86,15 +87,15 @@ constructor(
                 .Factory()
                 .setCache(playerCache)
                 .setUpstreamDataSourceFactory(
-                    OkHttpDataSource.Factory(streamHttpClient),
-                ),
+                    DefaultDataSource.Factory(
+                        context,
+                        OkHttpDataSource.Factory(streamHttpClient),
+                    ),
+                )
+                .setCacheWriteDataSinkFactory(null)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR),
         ) { dataSpec ->
             val mediaId = dataSpec.key ?: error("No media id")
-            val length = if (dataSpec.length >= 0) dataSpec.length else 1
-
-            if (playerCache.isCached(mediaId, dataSpec.position, length)) {
-                return@Factory dataSpec
-            }
 
             songUrlCache[mediaId]?.let { cachedStream ->
                 return@Factory dataSpec
@@ -143,29 +144,25 @@ constructor(
             }
 
             database.query {
-                if (actualContentLength != null) {
-                    upsert(
-                        FormatEntity(
-                            id = mediaId,
-                            itag = format.itag,
-                            mimeType = format.mimeType.substringBefore(";"),
-                            codecs =
-                                format.mimeType
-                                    .substringAfter("codecs=", missingDelimiterValue = "")
-                                    .substringBefore(";")
-                                    .trim()
-                                    .removeSurrounding("\""),
-                            bitrate = format.bitrate,
-                            sampleRate = format.audioSampleRate,
-                            contentLength = actualContentLength,
-                            loudnessDb = playbackData.audioConfig?.loudnessDb,
-                            perceptualLoudnessDb = playbackData.audioConfig?.perceptualLoudnessDb,
-                            playbackUrl = playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl
-                        ),
-                    )
-                } else {
-                    deleteFormat(mediaId)
-                }
+                upsert(
+                    FormatEntity(
+                        id = mediaId,
+                        itag = format.itag,
+                        mimeType = format.mimeType.substringBefore(";"),
+                        codecs =
+                            format.mimeType
+                                .substringAfter("codecs=", missingDelimiterValue = "")
+                                .substringBefore(";")
+                                .trim()
+                                .removeSurrounding("\""),
+                        bitrate = format.bitrate,
+                        sampleRate = format.audioSampleRate,
+                        contentLength = actualContentLength ?: 0L,
+                        loudnessDb = playbackData.audioConfig?.loudnessDb,
+                        perceptualLoudnessDb = playbackData.audioConfig?.perceptualLoudnessDb,
+                        playbackUrl = playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl
+                    ),
+                )
 
                 // Metadata registration only — dateDownload is intentionally NOT set here.
                 // It belongs solely to onDownloadChanged()'s STATE_COMPLETED branch below,
@@ -220,7 +217,7 @@ constructor(
                         download: Download,
                         finalException: Exception?,
                     ) {
-                        if (download.state == Download.STATE_FAILED && finalException.isExpiredStreamError()) {
+                        if (download.state == Download.STATE_FAILED) {
                             songUrlCache.invalidate(download.request.id)
                         }
 

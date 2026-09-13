@@ -1010,6 +1010,38 @@ fun SongMenu(
                                 )
                             }
                         },
+                        Material3MenuItemData(
+                            title = { Text(text = stringResource(R.string.save_to_device)) },
+                            description = { Text(text = stringResource(R.string.save_to_device_desc)) },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.arrow_downward),
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                onDismiss()
+                                Toast.makeText(context, R.string.saving_to_device, Toast.LENGTH_SHORT).show()
+                                coroutineScope.launch {
+                                    val result = com.joymusic.music.utils.AudioTrimmer.saveFullSongToDevice(
+                                        context = context,
+                                        songId = song.id,
+                                        title = song.song.title,
+                                        artist = song.orderedArtists.joinToString(", ") { it.name },
+                                        thumbnailUrl = song.thumbnailUrl,
+                                        playerCache = playerConnection.service.playerCache,
+                                        downloadCache = playerConnection.service.downloadCache,
+                                    )
+                                    withContext(Dispatchers.Main) {
+                                        if (result.isSuccess) {
+                                            Toast.makeText(context, R.string.saved_to_device, Toast.LENGTH_LONG).show()
+                                        } else {
+                                            Toast.makeText(context, R.string.save_to_device_failed, Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            },
+                        ),
                     ),
             )
         }

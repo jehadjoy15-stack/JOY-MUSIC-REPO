@@ -568,4 +568,118 @@ object AudioTrimmer {
             extractor.release()
         }
     }
+
+    /**
+     * Saves the full song to user's device storage as standard .m4a / AAC audio.
+     * Automatically registers with Android MediaStore / MediaScanner so other music players and file manager see it.
+     */
+    suspend fun saveFullSongToDevice(
+        context: Context,
+        songId: String,
+        title: String,
+        artist: String,
+        thumbnailUrl: String?,
+        playerCache: Cache?,
+        downloadCache: Cache?,
+    ): Result<android.net.Uri> = withContext(Dispatchers.IO) {
+        runCatching {
+            val sanitizedTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+            val sanitizedArtist = artist.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+            val fileName = "$sanitizedTitle - $sanitizedArtist.m4a"
+
+            val tempDir = File(context.cacheDir, "exports").apply { if (!exists()) mkdirs() }
+            val tempSourceFile = File(tempDir, "temp_src_${System.currentTimeMillis()}.dat")
+            val tempOutputFile = File(tempDir, "temp_out_${System.currentTimeMillis()}.m4a")
+
+            try {
+                // 1. Try extracting from local download cache or player cache
+                var extracted = tryExtractFromCache(downloadCache, songId, tempSourceFile)
+                if (!extracted) {
+                    extracted = tryExtractFromCache(playerCache, songId, tempSourceFile)
+                }
+
+                // 2. If not cached, download unthrottled with range downloader
+                if (!extracted) {
+                    val connectivityManager = context.getSystemService<ConnectivityManager>()
+                        ?: error("ConnectivityManager unavailable")
+                    val playbackData = YTPlayerUtils.playerResponseForPlayback(
+                        videoId = songId,
+                        audioQuality = AudioQuality.HIGH,
+                        connectivityManager = connectivityManager,
+                        contentHints = com.joymusic.innertube.strategy.ContentHints(),
+                    ).getOrThrow()
+
+                    downloadFastWithRanges(
+                        streamUrl = playbackData.streamUrl,
+                        headers = playbackData.streamHeaders,
+                        contentLength = playbackData.format.contentLength,
+                        destinationFile = tempSourceFile,
+                    )
+                    if (!tempSourceFile.exists() || tempSourceFile.length() < 1000L) {
+                        throw IOException("Failed to download audio stream")
+                    }
+                }
+
+                // 3. Transcode/mux to standard .m4a container
+                val success = trimAndTranscodeToAac(
+                    sourceFile = tempSourceFile,
+                    outputAacFile = tempOutputFile,
+                    startMs = 0L,
+                    endMs = Long.MAX_VALUE,
+                )
+
+                val finalFile = if (success && tempOutputFile.exists() && tempOutputFile.length() > 1000L) {
+                    tempOutputFile
+                } else if (tempSourceFile.length() > 1000L) {
+                    tempSourceFile
+                } else {
+                    throw IOException("Failed to transcode audio")
+                }
+
+                // 4. Save to Public MediaStore / Music folder
+                val resultUri: android.net.Uri
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val contentValues = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Audio.Media.DISPLAY_NAME, fileName)
+                        put(android.provider.MediaStore.Audio.Media.TITLE, title)
+                        put(android.provider.MediaStore.Audio.Media.ARTIST, artist)
+                        put(android.provider.MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
+                        put(android.provider.MediaStore.Audio.Media.RELATIVE_PATH, "Music/JOY MUSIC")
+                        put(android.provider.MediaStore.Audio.Media.IS_PENDING, 1)
+                    }
+
+                    val resolver = context.contentResolver
+                    val uri = resolver.insert(android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, contentValues)
+                        ?: throw IOException("Failed to create MediaStore entry")
+
+                    resolver.openOutputStream(uri)?.use { out ->
+                        finalFile.inputStream().use { input ->
+                            input.copyTo(out)
+                        }
+                    }
+
+                    contentValues.clear()
+                    contentValues.put(android.provider.MediaStore.Audio.Media.IS_PENDING, 0)
+                    resolver.update(uri, contentValues, null, null)
+                    resultUri = uri
+                } else {
+                    val publicMusicDir = DownloadFolderHelper.getPublicMusicDownloadFolder(context)
+                    val targetFile = File(publicMusicDir, fileName)
+                    finalFile.copyTo(targetFile, overwrite = true)
+                    android.media.MediaScannerConnection.scanFile(
+                        context,
+                        arrayOf(targetFile.absolutePath),
+                        arrayOf("audio/mp4"),
+                        null
+                    )
+                    resultUri = android.net.Uri.fromFile(targetFile)
+                }
+
+                resultUri
+            } finally {
+                if (tempSourceFile.exists()) tempSourceFile.delete()
+                if (tempOutputFile.exists()) tempOutputFile.delete()
+            }
+        }
+    }
 }

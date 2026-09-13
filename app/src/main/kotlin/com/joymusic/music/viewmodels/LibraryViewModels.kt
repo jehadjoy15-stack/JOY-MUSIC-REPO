@@ -86,23 +86,32 @@ constructor(
         .debounce(300)
         .stateIn(viewModelScope, SharingStarted.Lazily, "")
 
+    private val deviceRefreshTrigger = MutableStateFlow(0L)
+
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
     }
 
+    fun refreshDeviceSongs() {
+        deviceRefreshTrigger.value = System.currentTimeMillis()
+    }
+
     val allSongs =
-        context.dataStore.data
-            .map {
-                Triple(
+        combine(
+            context.dataStore.data
+                .map {
                     Triple(
-                        it[SongFilterKey].toEnum(SongFilter.LIKED),
-                        it[SongSortTypeKey].toEnum(SongSortType.CREATE_DATE),
-                        (it[SongSortDescendingKey] ?: true),
-                    ),
-                    it[HideExplicitKey] ?: false,
-                    it[HideVideoSongsKey] ?: false
-                )
-            }.distinctUntilChanged()
+                        Triple(
+                            it[SongFilterKey].toEnum(SongFilter.LIKED),
+                            it[SongSortTypeKey].toEnum(SongSortType.CREATE_DATE),
+                            (it[SongSortDescendingKey] ?: true),
+                        ),
+                        it[HideExplicitKey] ?: false,
+                        it[HideVideoSongsKey] ?: false
+                    )
+                }.distinctUntilChanged(),
+            deviceRefreshTrigger,
+        ) { config, _ -> config }
             .flatMapLatest { (filterSort, hideExplicit, hideVideoSongs) ->
                 val (filter, sortType, descending) = filterSort
                 when (filter) {
@@ -110,6 +119,16 @@ constructor(
                     SongFilter.LIKED -> database.likedSongs(sortType, descending).map { it.filterExplicit(hideExplicit).filterVideoSongs(hideVideoSongs) }
                     SongFilter.DOWNLOADED -> database.downloadedSongs(sortType, descending).map { it.filterExplicit(hideExplicit).filterVideoSongs(hideVideoSongs) }
                     SongFilter.UPLOADED -> database.uploadedSongs(sortType, descending).map { it.filterExplicit(hideExplicit).filterVideoSongs(hideVideoSongs) }
+                    SongFilter.DEVICE -> kotlinx.coroutines.flow.flow {
+                        val deviceSongs = com.joymusic.music.utils.DeviceMusicScanner.scanDeviceAudio(context)
+                        val sorted = when (sortType) {
+                            SongSortType.NAME -> if (descending) deviceSongs.sortedByDescending { it.song.title.lowercase() } else deviceSongs.sortedBy { it.song.title.lowercase() }
+                            SongSortType.ARTIST -> if (descending) deviceSongs.sortedByDescending { it.orderedArtists.firstOrNull()?.name?.lowercase() } else deviceSongs.sortedBy { it.orderedArtists.firstOrNull()?.name?.lowercase() }
+                            SongSortType.PLAY_TIME -> if (descending) deviceSongs.sortedByDescending { it.song.duration } else deviceSongs.sortedBy { it.song.duration }
+                            else -> if (descending) deviceSongs.reversed() else deviceSongs
+                        }
+                        emit(sorted)
+                    }
                 }
             }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 

@@ -1657,6 +1657,7 @@ class MusicService :
         mediaId: String,
         playbackData: YTPlayerUtils.PlaybackData? = null,
     ) {
+        if (mediaId.startsWith("content://") || mediaId.startsWith("file://") || mediaId.startsWith("local_")) return
         val song = database.song(mediaId).first()
         val mediaMetadata =
             withContext(Dispatchers.Main) {
@@ -3730,6 +3731,11 @@ class MusicService :
     private fun createDataSourceFactory(): DataSource.Factory {
         return ResolvingDataSource.Factory(createCacheDataSource()) { dataSpec ->
             val mediaId = dataSpec.key ?: error("No media id")
+
+            val uriStr = dataSpec.uri.toString()
+            if (dataSpec.uri.scheme == "content" || dataSpec.uri.scheme == "file" || uriStr.startsWith("content://") || uriStr.startsWith("file://") || mediaId.startsWith("content://") || mediaId.startsWith("file://") || mediaId.startsWith("local_")) {
+                return@Factory dataSpec
+            }
 
             val shouldBypassCache = bypassCacheForQualityChange.contains(mediaId)
 

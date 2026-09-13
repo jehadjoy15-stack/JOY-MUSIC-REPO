@@ -57,6 +57,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -267,8 +269,28 @@ fun LibrarySongsScreen(
             }
         }
 
-    LaunchedEffect(Unit) {
-        if (ytmSync) {
+    val permissionLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission(),
+        ) { isGranted ->
+            if (isGranted) {
+                viewModel.refreshDeviceSongs()
+            }
+        }
+
+    LaunchedEffect(filter) {
+        if (filter == SongFilter.DEVICE) {
+            if (!com.joymusic.music.utils.DeviceMusicScanner.hasPermission(context)) {
+                val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    android.Manifest.permission.READ_MEDIA_AUDIO
+                } else {
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE
+                }
+                permissionLauncher.launch(permission)
+            } else {
+                viewModel.refreshDeviceSongs()
+            }
+        } else if (ytmSync) {
             when (filter) {
                 SongFilter.LIKED -> viewModel.syncLikedSongs()
                 SongFilter.LIBRARY -> viewModel.syncLibrarySongs()
@@ -383,6 +405,7 @@ fun LibrarySongsScreen(
                                 SongFilter.LIBRARY to stringResource(R.string.filter_library),
                                 SongFilter.UPLOADED to stringResource(R.string.filter_uploaded),
                                 SongFilter.DOWNLOADED to stringResource(R.string.filter_downloaded),
+                                SongFilter.DEVICE to stringResource(R.string.filter_device),
                             ),
                         currentValue = filter,
                         onValueUpdate = {
@@ -454,6 +477,58 @@ fun LibrarySongsScreen(
                     contentType = CONTENT_TYPE_HEADER,
                 ) {
                     LibrarySearchEmptyPlaceholder(modifier = Modifier.animateItem())
+                }
+            } else if (filter == SongFilter.DEVICE && filteredSongs.isEmpty()) {
+                item(
+                    key = "device_permission_placeholder",
+                    contentType = CONTENT_TYPE_HEADER,
+                ) {
+                    Column(
+                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 32.dp, vertical = 64.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.music_note),
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = if (!com.joymusic.music.utils.DeviceMusicScanner.hasPermission(context)) {
+                                stringResource(R.string.storage_permission_required)
+                            } else {
+                                stringResource(R.string.no_device_songs)
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = stringResource(R.string.storage_permission_desc),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                        if (!com.joymusic.music.utils.DeviceMusicScanner.hasPermission(context)) {
+                            Spacer(Modifier.height(24.dp))
+                            androidx.compose.material3.Button(
+                                onClick = {
+                                    val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                        android.Manifest.permission.READ_MEDIA_AUDIO
+                                    } else {
+                                        android.Manifest.permission.READ_EXTERNAL_STORAGE
+                                    }
+                                    permissionLauncher.launch(permission)
+                                },
+                            ) {
+                                Text(stringResource(R.string.grant_permission))
+                            }
+                        }
+                    }
                 }
             }
 

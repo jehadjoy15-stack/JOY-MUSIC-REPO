@@ -1113,6 +1113,20 @@
     <string name="singing_listening_desc">Sing 2–3 lines clearly into the mic</string>
     <string name="singing_processing">Finding matching song…</string>
     <string name="sing_try_again">Try singing again</string>
+
+    <!-- Save / Export to Storage Strings -->
+    <string name="save_to_device">Save to Device</string>
+    <string name="save_to_device_desc">Export full song (.m4a) to storage</string>
+    <string name="saving_to_device">Saving to Device…</string>
+    <string name="saved_to_device">Song saved to Music/JOY MUSIC folder</string>
+    <string name="save_to_device_failed">Failed to save song to device</string>
+
+    <!-- Device Local Music Strings -->
+    <string name="filter_device">Device</string>
+    <string name="storage_permission_required">Storage permission required</string>
+    <string name="storage_permission_desc">Allow JOY MUSIC to access your device audio files to play local music.</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="no_device_songs">No music files found on device</string>
 </resources>
 
 

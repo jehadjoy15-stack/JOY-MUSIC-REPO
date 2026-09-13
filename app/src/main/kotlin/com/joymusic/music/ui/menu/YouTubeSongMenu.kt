@@ -106,8 +106,9 @@ fun YouTubeSongMenu(
     val context = LocalContext.current
     val database = LocalDatabase.current
     val playerConnection = LocalPlayerConnection.current ?: return
+    val downloadUtil = LocalDownloadUtil.current
     val librarySong by database.song(song.id).collectAsStateWithLifecycle(initialValue = null)
-    val download by LocalDownloadUtil.current.getDownload(song.id).collectAsStateWithLifecycle(initialValue = null)
+    val download by downloadUtil.getDownload(song.id).collectAsStateWithLifecycle(initialValue = null)
     val coroutineScope = rememberCoroutineScope()
     val syncUtils = LocalSyncUtils.current
     val listenTogetherManager = LocalListenTogetherManager.current
@@ -681,7 +682,39 @@ fun YouTubeSongMenu(
                                 }
                             )
                         }
-                    }
+                    },
+                    Material3MenuItemData(
+                        title = { Text(text = stringResource(R.string.save_to_device)) },
+                        description = { Text(text = stringResource(R.string.save_to_device_desc)) },
+                        icon = {
+                            Icon(
+                                painter = painterResource(R.drawable.arrow_downward),
+                                contentDescription = null,
+                            )
+                        },
+                        onClick = {
+                            onDismiss()
+                            android.widget.Toast.makeText(context, R.string.saving_to_device, android.widget.Toast.LENGTH_SHORT).show()
+                            coroutineScope.launch {
+                                val result = com.joymusic.music.utils.AudioTrimmer.saveFullSongToDevice(
+                                    context = context,
+                                    songId = song.id,
+                                    title = song.title,
+                                    artist = song.artists.joinToString(", ") { it.name },
+                                    thumbnailUrl = song.thumbnail,
+                                    playerCache = downloadUtil.playerCache,
+                                    downloadCache = downloadUtil.downloadCache,
+                                )
+                                withContext(Dispatchers.Main) {
+                                    if (result.isSuccess) {
+                                        android.widget.Toast.makeText(context, R.string.saved_to_device, android.widget.Toast.LENGTH_LONG).show()
+                                    } else {
+                                        android.widget.Toast.makeText(context, R.string.save_to_device_failed, android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        },
+                    ),
                 )
             )
         }

@@ -104,6 +104,7 @@ import com.joymusic.music.ui.component.VolumeSlider
 import com.joymusic.music.utils.rememberPreference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.log2
 import kotlin.math.pow
 import kotlin.math.round
@@ -636,6 +637,39 @@ fun PlayerMenu(
                                 )
                             }
                         },
+                        Material3MenuItemData(
+                            title = { Text(text = stringResource(R.string.save_to_device)) },
+                            description = { Text(text = stringResource(R.string.save_to_device_desc)) },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.arrow_downward),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            },
+                            onClick = {
+                                onDismiss()
+                                Toast.makeText(context, R.string.saving_to_device, Toast.LENGTH_SHORT).show()
+                                coroutineScope.launch {
+                                    val result = com.joymusic.music.utils.AudioTrimmer.saveFullSongToDevice(
+                                        context = context,
+                                        songId = mediaMetadata.id,
+                                        title = mediaMetadata.title,
+                                        artist = mediaMetadata.artists.joinToString(", ") { it.name },
+                                        thumbnailUrl = mediaMetadata.thumbnailUrl,
+                                        playerCache = playerConnection.service.playerCache,
+                                        downloadCache = playerConnection.service.downloadCache,
+                                    )
+                                    withContext(Dispatchers.Main) {
+                                        if (result.isSuccess) {
+                                            Toast.makeText(context, R.string.saved_to_device, Toast.LENGTH_LONG).show()
+                                        } else {
+                                            Toast.makeText(context, R.string.save_to_device_failed, Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            },
+                        ),
                     ),
             )
         }
