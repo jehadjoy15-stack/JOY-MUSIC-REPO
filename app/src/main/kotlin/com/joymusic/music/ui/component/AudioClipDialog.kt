@@ -1187,7 +1187,20 @@ private fun VideoReelPreviewCard(
             // Bottom Section: Live Synced Lyrics or Dynamic Waveform
             val lyricLines = remember(lyricsEntries) { lyricsEntries.filter { it.text.isNotBlank() } }
             if (lyricLines.isNotEmpty()) {
-                val activeIndex = lyricLines.indexOfLast { it.time <= currentTimeMs }.coerceAtLeast(0)
+                val activeIndex = remember(lyricLines, currentTimeMs) {
+                    var idx = lyricLines.indexOfLast { it.time <= currentTimeMs }.coerceAtLeast(0)
+                    if (idx > 0) {
+                        val prevLine = lyricLines[idx - 1]
+                        val prevWords = prevLine.words
+                        if (!prevWords.isNullOrEmpty()) {
+                            val prevEndMs = (prevWords.last().endTime * 1000).toLong()
+                            if (currentTimeMs < prevEndMs) {
+                                idx = idx - 1
+                            }
+                        }
+                    }
+                    idx
+                }
                 androidx.compose.animation.AnimatedContent(
                     targetState = activeIndex,
                     transitionSpec = {
@@ -1277,11 +1290,11 @@ private fun VideoReelPreviewCard(
                                                 style = TextStyle(
                                                     color = Color.White.copy(alpha = charAlpha),
                                                     fontSize = 12.sp,
-                                                    fontWeight = if (charLp > 0.3f) FontWeight.Bold else FontWeight.Medium,
+                                                    fontWeight = if (charLp > 0.2f) FontWeight.Bold else FontWeight.Medium,
                                                     shadow = if (charLp > 0.05f) {
                                                         androidx.compose.ui.graphics.Shadow(
-                                                            color = Color(0xFFFFD1DC).copy(alpha = 0.85f * charLp),
-                                                            blurRadius = 10f * charLp,
+                                                            color = Color(0xFFFFD5E5).copy(alpha = 0.90f * charLp),
+                                                            blurRadius = 12f * charLp,
                                                         )
                                                     } else null,
                                                 ),

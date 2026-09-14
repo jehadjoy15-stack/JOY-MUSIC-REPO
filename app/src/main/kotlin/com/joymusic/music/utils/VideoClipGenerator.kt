@@ -319,6 +319,26 @@ object VideoClipGenerator {
                     canvas.drawBitmap(roundedAppLogo, badgeLeft + 12f, badgeTop + 8f, null)
                     canvas.drawText("JOY MUSIC", badgeLeft + 62f, badgeTop + 37f, watermarkTextPaint)
 
+                    // Draw Soft Ambient Colored Backlight behind Album Art
+                    val glowPulse = 1.0f + 0.025f * sin((frameIndex * 0.14f).toDouble()).toFloat()
+                    val albumGlowShader = android.graphics.RadialGradient(
+                        cardRect.centerX(),
+                        cardRect.centerY(),
+                        240f * glowPulse,
+                        intArrayOf(
+                            Color.argb(70, Color.red(dominantColor), Color.green(dominantColor), Color.blue(dominantColor)),
+                            Color.argb(30, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)),
+                            Color.TRANSPARENT
+                        ),
+                        floatArrayOf(0f, 0.58f, 1f),
+                        Shader.TileMode.CLAMP
+                    )
+                    val albumGlowPaint = Paint().apply {
+                        shader = albumGlowShader
+                        isAntiAlias = true
+                    }
+                    canvas.drawCircle(cardRect.centerX(), cardRect.centerY(), 240f * glowPulse, albumGlowPaint)
+
                     // Draw Album Art with subtle ambient pulse
                     val pulse = 1.0f + 0.007f * sin((frameIndex * 0.12f).toDouble()).toFloat()
                     canvas.save()
@@ -332,83 +352,109 @@ object VideoClipGenerator {
                     canvas.drawText(cleanTitle, VIDEO_WIDTH / 2f, 605f, titlePaint)
                     canvas.drawText(cleanArtist, VIDEO_WIDTH / 2f, 650f, artistPaint)
 
-                    // Draw Synced Lyrics or Dynamic Live Visualizer Wave (Apple Music Style with Staggered Push Wave Physics)
+                    // Draw Synced Lyrics or Dynamic Live Visualizer Wave
                     if (lyricLines.isNotEmpty()) {
                         val firstLineTime = lyricLines[0].time
                         val isIntro = currentFrameTimeMs < firstLineTime
                         val rawActiveIndex = lyricLines.indexOfLast { it.time <= currentFrameTimeMs }
-                        val activeIndex = rawActiveIndex.coerceAtLeast(0)
+                        var activeIndex = rawActiveIndex.coerceAtLeast(0)
+
+                        // Prevent premature skip: if previous line's words are still singing, keep it active
+                        if (activeIndex > 0) {
+                            val prevLine = lyricLines[activeIndex - 1]
+                            val prevWords = prevLine.words
+                            if (!prevWords.isNullOrEmpty()) {
+                                val prevEndMs = (prevWords.last().endTime * 1000).toLong()
+                                if (currentFrameTimeMs < prevEndMs) {
+                                    activeIndex = activeIndex - 1
+                                }
+                            }
+                        }
+
                         val currentLine = lyricLines[activeIndex]
                         val nextLine = lyricLines.getOrNull(activeIndex + 1)
 
-                        val lineStartTime = currentLine.time
-                        val lineEndTime = nextLine?.time ?: (lineStartTime + 4000L)
-                        val transitionDurationMs = 750f
-                        val transitionStartMs = lineEndTime - transitionDurationMs
+                        val currentLineWords = currentLine.words
+                        val currentLineWordsEndMs = if (!currentLineWords.isNullOrEmpty()) {
+                            (currentLineWords.last().endTime * 1000).toLong()
+                        } else {
+                            currentLine.time + 2500L
+                        }
 
-                        // Kinetic wobble on newly active line (from JOY MUSIC lyrics physics)
-                        val timeSinceActiveStart = (currentFrameTimeMs - lineStartTime).coerceAtLeast(0L)
+                        val nextLineStartTime = nextLine?.time
+                        val hasNextLine = nextLine != null && nextLineStartTime != null
+
+                        // Calculate seamless transition window to next line
+                        val (transitionStartMs, transitionDurationMs) = if (hasNextLine) {
+                            val nextStart = nextLineStartTime!!
+                            // Strictly do NOT transition away while the current line's words are actively being sung!
+                            val tStart = if (nextStart > currentLineWordsEndMs) {
+                                // Natural pause between lines: glide smoothly in the gap right before next line starts
+                                maxOf(currentLineWordsEndMs, nextStart - 400L)
+                            } else {
+                                // Immediate follow-up
+                                currentLineWordsEndMs
+                            }
+                            val tDuration = (nextStart - tStart).toFloat().coerceIn(260f, 500f)
+                            tStart to tDuration
+                        } else {
+                            // Last line of the song/clip: never transition away to empty space!
+                            Long.MAX_VALUE to 500f
+                        }
+
+                        val scrollProgress = if (hasNextLine && currentFrameTimeMs >= transitionStartMs) {
+                            val rawT = ((currentFrameTimeMs - transitionStartMs) / transitionDurationMs).coerceIn(0f, 1f)
+                            evaluateFastOutSlowIn(rawT)
+                        } else 0f
+
+                        // Kinetic wobble on newly active line
+                        val timeSinceActiveStart = (currentFrameTimeMs - currentLine.time).coerceAtLeast(0L)
                         val lineWobble = if (!isIntro && timeSinceActiveStart in 0L..750L) {
                             if (timeSinceActiveStart < 125L) timeSinceActiveStart / 125f
                             else (1f - (timeSinceActiveStart - 125L) / 625f).coerceAtLeast(0f)
                         } else 0f
 
                         val lyricCenterY = 880f
-                        val lineSpacing = 78f
+                        val lineSpacing = 82f
 
-                        // Render visible lines with staggered distance-delay wave
+                        // Ambient soft halo behind active lyric center
+                        val ambientLyricGlowShader = android.graphics.RadialGradient(
+                            VIDEO_WIDTH / 2f,
+                            lyricCenterY,
+                            250f,
+                            intArrayOf(
+                                Color.argb(42, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)),
+                                Color.argb(18, Color.red(dominantColor), Color.green(dominantColor), Color.blue(dominantColor)),
+                                Color.TRANSPARENT
+                            ),
+                            floatArrayOf(0f, 0.6f, 1f),
+                            Shader.TileMode.CLAMP
+                        )
+                        val ambientLyricGlowPaint = Paint().apply {
+                            shader = ambientLyricGlowShader
+                            isAntiAlias = true
+                        }
+                        canvas.drawCircle(VIDEO_WIDTH / 2f, lyricCenterY, 250f, ambientLyricGlowPaint)
+
+                        // Render visible lines with smooth continuous scrolling
                         val range = (activeIndex - 2)..(activeIndex + 3)
                         for (idx in range) {
                             if (idx in lyricLines.indices) {
                                 val line = lyricLines[idx]
-                                
-                                // Distance from incoming target line for stagger delay
-                                val staggerDistance = Math.abs(idx - (activeIndex + 1))
-                                val staggerDelayMs = (staggerDistance * 22f).coerceAtMost(180f)
-                                val lineWindowStart = transitionStartMs + staggerDelayMs
-                                val lineWindowDuration = (transitionDurationMs - staggerDelayMs).coerceAtLeast(100f)
-
-                                val scrollProgress = if (nextLine != null && currentFrameTimeMs >= lineWindowStart) {
-                                    val rawT = ((currentFrameTimeMs - lineWindowStart) / lineWindowDuration).coerceIn(0f, 1f)
-                                    // FastOutSlowIn (0.4, 0.0, 0.2, 1.0) exact cubic bezier easing
-                                    evaluateFastOutSlowIn(rawT)
-                                } else 0f
-
                                 val lineY = lyricCenterY + (idx - activeIndex - scrollProgress) * lineSpacing
                                 val distFromCenter = Math.abs(lineY - lyricCenterY)
 
-                                if (distFromCenter < 245f) {
-                                    val focus = (1f - (distFromCenter / (lineSpacing * 1.15f))).coerceIn(0f, 1f)
+                                if (distFromCenter < 255f) {
+                                    val focus = (1f - (distFromCenter / (lineSpacing * 1.2f))).coerceIn(0f, 1f)
                                     val smoothFocus = ((1f - cos(focus * Math.PI.toFloat())) / 2f).coerceIn(0f, 1f)
 
-                                    val isCenterActive = !isIntro && (smoothFocus > 0.45f) && (idx == activeIndex)
+                                    val isCenterActive = !isIntro && (smoothFocus > 0.45f) && (idx == activeIndex || (idx == activeIndex + 1 && scrollProgress >= 0.7f && currentFrameTimeMs >= (nextLineStartTime ?: Long.MAX_VALUE)))
                                     val bounceBoost = if (isCenterActive) lineWobble * 0.045f else 0f
                                     val scale = 0.88f + (if (isIntro) 0.08f else 0.16f) * smoothFocus + bounceBoost
                                     val alpha = if (isIntro) {
                                         (0.32f + 0.28f * smoothFocus).coerceIn(0f, 1f)
                                     } else {
                                         (0.28f + 0.72f * smoothFocus).coerceIn(0f, 1f)
-                                    }
-
-                                    val rawText = line.text
-
-                                    val lyricPaint = TextPaint().apply {
-                                        color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
-                                        textSize = 33f
-                                        typeface = Typeface.create(
-                                            Typeface.DEFAULT,
-                                            if (isCenterActive) Typeface.BOLD else Typeface.NORMAL
-                                        )
-                                        isAntiAlias = true
-                                        textAlign = Paint.Align.CENTER
-                                        // Subtle ambient text drop shadow for depth
-                                        val shadowAlpha = if (isCenterActive) (170 * alpha).toInt() else (65 * alpha).toInt()
-                                        setShadowLayer(
-                                            if (isCenterActive) 14f else 8f,
-                                            0f,
-                                            if (isCenterActive) 4f else 2f,
-                                            Color.argb(shadowAlpha, 0, 0, 0)
-                                        )
                                     }
 
                                     canvas.save()
@@ -1350,55 +1396,51 @@ object VideoClipGenerator {
                     }
                 }
 
-                val charCount = wordText.length.coerceAtLeast(1)
-                var charX = curX
+                // 1. Draw base dimmed word
+                canvas.drawText(wordText, curX, curY, dimPaint)
 
-                for (cIdx in 0 until wordText.length) {
-                    val charStr = wordText[cIdx].toString()
-                    val charW = dimPaint.measureText(charStr)
+                // 2. Draw continuous fluid radiant light sweep if word is being or has been sung
+                if (progress >= 1f) {
+                    canvas.drawText(wordText, curX, curY, activePaint)
+                } else if (progress > 0f) {
+                    val sweepWidth = wWidth.coerceAtLeast(1f)
+                    val sweepX = curX + (sweepWidth * progress)
+                    val featherPx = 16f.coerceAtMost(sweepWidth * 0.4f).coerceAtLeast(4f)
 
-                    val charLp = if (!isCenterActive) 0f
-                    else ((progress - (cIdx.toFloat() / charCount)) * charCount).coerceIn(0f, 1f)
+                    val pActive = ((sweepX - curX - featherPx) / sweepWidth).coerceIn(0f, 1f)
+                    val pPeak = ((sweepX - curX) / sweepWidth).coerceIn(0f, 1f)
+                    val pFade = ((sweepX - curX + featherPx) / sweepWidth).coerceIn(0f, 1f)
 
-                    // Draw dimmed base character
-                    canvas.drawText(charStr, charX, curY, dimPaint)
+                    val sweepShader = LinearGradient(
+                        curX, curY,
+                        curX + sweepWidth, curY,
+                        intArrayOf(
+                            Color.argb((alpha * 255).toInt(), 255, 255, 255),
+                            Color.argb((alpha * 255).toInt(), 255, 255, 255),
+                            Color.argb((alpha * 255).toInt(), 255, 240, 248),
+                            Color.TRANSPARENT,
+                            Color.TRANSPARENT
+                        ),
+                        floatArrayOf(
+                            0f,
+                            pActive,
+                            pPeak.coerceAtLeast(pActive),
+                            pFade.coerceAtLeast(pPeak),
+                            1f
+                        ),
+                        Shader.TileMode.CLAMP
+                    )
 
-                    // Draw butter-smooth progressive light sweep across this exact alphabet with the tune
-                    if (charLp >= 1f) {
-                        canvas.drawText(charStr, charX, curY, activePaint)
-                    } else if (charLp > 0f) {
-                        val fXL = charW * charLp
-                        val eW = (charW * 0.5f).coerceAtLeast(1.5f)
-                        val sWL = (fXL - eW).coerceAtLeast(0f)
-
-                        // 1. Solid light behind the wave front
-                        if (sWL > 0f) {
-                            canvas.save()
-                            canvas.clipRect(charX, curY - dimPaint.textSize * 1.3f, charX + sWL, curY + dimPaint.textSize * 0.5f)
-                            canvas.drawText(charStr, charX, curY, activePaint)
-                            canvas.restore()
-                        }
-
-                        // 2. Liquid light soft gradient sweep head (advancing with tune)
-                        for (j in 0 until 8) {
-                            val start = sWL + (j * eW / 8f)
-                            val end = (sWL + ((j + 1) * eW / 8f) + 0.5f).coerceAtMost(fXL)
-                            if (end > start) {
-                                val sliceAlpha = (1f - (j + 0.5f) / 8f).coerceIn(0f, 1f)
-                                val slicePaint = TextPaint(activePaint).apply {
-                                    color = Color.argb((alpha * sliceAlpha * 255).toInt(), 255, 255, 255)
-                                    val glowAlpha = (alpha * sliceAlpha * 220).toInt().coerceIn(0, 255)
-                                    setShadowLayer(16f * sliceAlpha, 0f, 0f, Color.argb(glowAlpha, 255, 230, 240))
-                                }
-                                canvas.save()
-                                canvas.clipRect(charX + start, curY - dimPaint.textSize * 1.3f, charX + end, curY + dimPaint.textSize * 0.5f)
-                                canvas.drawText(charStr, charX, curY, slicePaint)
-                                canvas.restore()
-                            }
-                        }
+                    val sweepPaint = TextPaint().apply {
+                        textSize = 33f
+                        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                        isAntiAlias = true
+                        shader = sweepShader
+                        val glowAlpha = (220 * alpha * progress).toInt().coerceIn(0, 255)
+                        setShadowLayer(18f, 0f, 0f, Color.argb(glowAlpha, 255, 230, 245))
                     }
 
-                    charX += charW
+                    canvas.drawText(wordText, curX, curY, sweepPaint)
                 }
 
                 curX += wWidth
