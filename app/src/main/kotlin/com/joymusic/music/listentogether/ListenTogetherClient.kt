@@ -625,7 +625,10 @@ class ListenTogetherClient
         private fun normalizeServerUrl(url: String): String {
             val trimmed = url.trim()
             if (trimmed.isEmpty()) return DEFAULT_SERVER_URL
-            return if (trimmed.contains("metroserver.meowery.eu", ignoreCase = true)) {
+            return if (trimmed.contains("meowery.eu", ignoreCase = true) ||
+                trimmed.contains("metroserver", ignoreCase = true) ||
+                trimmed.contains("onrender.com", ignoreCase = true)
+            ) {
                 DEFAULT_SERVER_URL
             } else {
                 trimmed
@@ -690,7 +693,7 @@ class ListenTogetherClient
                 Request
                     .Builder()
                     .url(getServerUrl())
-                    .header("User-Agent", context.packageName)
+                    .header("User-Agent", "com.metrolist.music")
                     .build()
 
             webSocket =
