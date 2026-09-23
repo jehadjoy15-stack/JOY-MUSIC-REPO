@@ -30,6 +30,11 @@ internal class ServerClock(
         val sampleOffset = serverSendTime + networkRoundTrip / 2.0 - receivedAt
         val previousOffset = serverOffsetMs
 
+        // Reject bad samples if we already have an offset and network roundtrip is too high
+        if (previousOffset != null && networkRoundTrip > 1000L && networkRoundTrip > bestRoundTripMs + 500L) {
+            return false
+        }
+
         if (networkRoundTrip < bestRoundTripMs) bestRoundTripMs = networkRoundTrip
         val weight = if (networkRoundTrip <= bestRoundTripMs + GOOD_SAMPLE_MARGIN_MS) 0.25 else 0.05
         serverOffsetMs = previousOffset?.let { it + weight * (sampleOffset - it) } ?: sampleOffset

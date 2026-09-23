@@ -60,7 +60,7 @@ internal fun <T> upcomingQueueItems(
     currentIndex: Int,
 ): List<T> = if (currentIndex in queue.indices) queue.drop(currentIndex + 1) else emptyList()
 
-private const val ACTIVE_PLAYBACK_SYNC_TOLERANCE_MS = 5_000L
+private const val ACTIVE_PLAYBACK_SYNC_TOLERANCE_MS = 3_500L
 
 internal fun shouldSeekDuringActivePlayback(
     positionDifferenceMs: Long,
@@ -81,8 +81,9 @@ class ListenTogetherManager
         companion object {
             private const val TAG = "ListenTogetherManager"
 
-            private const val SOFT_SYNC_THRESHOLD_MS = 50L
-            private const val HARD_SYNC_THRESHOLD_MS = 5_000L
+            private const val SOFT_SYNC_THRESHOLD_MS = 1_500L
+            private const val HARD_SYNC_THRESHOLD_MS = 3_500L
+            private const val DRIFT_TOLERANCE_MS = 300L
             private const val DRIFT_CORRECTION_SPEED = 0.03f
             private const val DRIFT_CHECK_INTERVAL_MS = 500L
         }
@@ -894,9 +895,13 @@ class ListenTogetherManager
                         val target = client.positionAtServerTime(position, effectiveAtServerTime, isPlaying = true)
                         val drift = target - player.currentPosition
                         val absoluteDrift = kotlin.math.abs(drift)
-                        if (absoluteDrift <= SOFT_SYNC_THRESHOLD_MS) break
+                        if (absoluteDrift <= DRIFT_TOLERANCE_MS) {
+                            restoreDriftCorrectionSpeed()
+                            break
+                        }
                         if (absoluteDrift >= HARD_SYNC_THRESHOLD_MS) {
-                            connection.seekTo(target)
+                            // Large drift will be reconciled by next sync action/heartbeat, avoid thrashing seeks
+                            restoreDriftCorrectionSpeed()
                             break
                         }
 
@@ -938,21 +943,26 @@ class ListenTogetherManager
             val posDiff = kotlin.math.abs(player.currentPosition - targetPos)
             val willPlay = pending.isPlaying
 
-            if (posDiff > SOFT_SYNC_THRESHOLD_MS) {
-                Timber
-                    .tag(
-                        TAG,
-                    ).d("Applying pending sync: seeking ${player.currentPosition} -> $targetPos (diff ${posDiff}ms)")
-                connection.seekTo(targetPos)
-            }
+            connection.allowInternalSync = true
+            try {
+                if (posDiff > SOFT_SYNC_THRESHOLD_MS) {
+                    Timber
+                        .tag(
+                            TAG,
+                        ).d("Applying pending sync: seeking ${player.currentPosition} -> $targetPos (diff ${posDiff}ms)")
+                    connection.seekTo(targetPos)
+                }
 
-            // Apply play/pause state only if it needs to change
-            if (willPlay && !player.playWhenReady) {
-                Timber.tag(TAG).d("Applying pending sync: starting playback")
-                connection.play()
-            } else if (!willPlay && player.playWhenReady) {
-                Timber.tag(TAG).d("Applying pending sync: pausing playback")
-                connection.pause()
+                // Apply play/pause state only if it needs to change
+                if (willPlay && !player.playWhenReady) {
+                    Timber.tag(TAG).d("Applying pending sync: starting playback")
+                    connection.play()
+                } else if (!willPlay && player.playWhenReady) {
+                    Timber.tag(TAG).d("Applying pending sync: pausing playback")
+                    connection.pause()
+                }
+            } finally {
+                connection.allowInternalSync = false
             }
             if (willPlay) {
                 startDriftCorrection(connection, pendingTrackId, pending.position, pending.lastUpdate.takeIf { it > 0L })
@@ -1094,14 +1104,29 @@ class ListenTogetherManager
                             if (shouldSeekDuringActivePlayback(posDiff, player.playbackState == Player.STATE_READY)) {
                                 cancelDriftCorrection()
                                 Timber.tag(TAG).d("Guest: hard sync ${player.currentPosition} -> $adjustedPos (diff ${posDiff}ms)")
-                                connection.seekTo(adjustedPos)
+                                connection.allowInternalSync = true
+                                try {
+                                    connection.seekTo(adjustedPos)
+                                } finally {
+                                    connection.allowInternalSync = false
+                                }
+                            } else if (posDiff > DRIFT_TOLERANCE_MS) {
+                                startDriftCorrection(connection, playTarget, basePos, actionServerTime)
                             }
                         } else {
                             cancelDriftCorrection()
-                            if (posDiff > SOFT_SYNC_THRESHOLD_MS) {
-                                connection.seekTo(adjustedPos)
+                            connection.allowInternalSync = true
+                            try {
+                                if (posDiff > SOFT_SYNC_THRESHOLD_MS) {
+                                    connection.seekTo(adjustedPos)
+                                }
+                                connection.play()
+                            } finally {
+                                connection.allowInternalSync = false
                             }
-                            connection.play()
+                            if (posDiff > DRIFT_TOLERANCE_MS) {
+                                startDriftCorrection(connection, playTarget, basePos, actionServerTime)
+                            }
                         }
                         lastSyncActionTime = now
                     }
@@ -1153,14 +1178,19 @@ class ListenTogetherManager
                         }
 
                         val posDiff = kotlin.math.abs(player.currentPosition - pos)
-                        if (player.playWhenReady) {
-                            Timber.tag(TAG).d("Guest: Pausing playback")
-                            connection.pause()
-                        }
+                        connection.allowInternalSync = true
+                        try {
+                            if (player.playWhenReady) {
+                                Timber.tag(TAG).d("Guest: Pausing playback")
+                                connection.pause()
+                            }
 
-                        if (posDiff > SOFT_SYNC_THRESHOLD_MS) {
-                            Timber.tag(TAG).d("Guest: PAUSE seeking ${player.currentPosition} -> $pos (diff ${posDiff}ms)")
-                            connection.seekTo(pos)
+                            if (posDiff > SOFT_SYNC_THRESHOLD_MS) {
+                                Timber.tag(TAG).d("Guest: PAUSE seeking ${player.currentPosition} -> $pos (diff ${posDiff}ms)")
+                                connection.seekTo(pos)
+                            }
+                        } finally {
+                            connection.allowInternalSync = false
                         }
                         lastSyncActionTime = now
                     }
@@ -1180,11 +1210,7 @@ class ListenTogetherManager
                                     position = pos,
                                     lastUpdate = actionServerTime ?: 0L,
                                     revision = action.revision,
-                                )).copy(
-                                    position = pos,
-                                    lastUpdate = actionServerTime ?: 0L,
-                                    revision = action.revision,
-                                )
+                                ))
                             return
                         }
                         if (guestNeedsTrackReconcile(seekTarget, player.currentMediaItem?.mediaId)) {
@@ -1202,8 +1228,13 @@ class ListenTogetherManager
                         }
 
                         cancelDriftCorrection()
-                        if (kotlin.math.abs(player.currentPosition - adjustedPos) > SOFT_SYNC_THRESHOLD_MS) {
-                            connection.seekTo(adjustedPos)
+                        connection.allowInternalSync = true
+                        try {
+                            if (kotlin.math.abs(player.currentPosition - adjustedPos) > DRIFT_TOLERANCE_MS) {
+                                connection.seekTo(adjustedPos)
+                            }
+                        } finally {
+                            connection.allowInternalSync = false
                         }
                         if (playing) {
                             startDriftCorrection(connection, seekTarget, pos, actionServerTime)
