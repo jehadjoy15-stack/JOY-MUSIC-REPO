@@ -153,10 +153,13 @@ fun AudioClipDialog(
     }
 
     var sliderRange by remember(songId, totalDuration, initialStartSeconds, initialEndSeconds) {
-        val start = (initialStartSeconds ?: 0f).coerceIn(0f, totalDuration)
-        val defaultEnd = if (initialEndSeconds != null) initialEndSeconds else minOf(start + 30f, totalDuration)
-        val end = defaultEnd.coerceIn(start + 1f, totalDuration)
-        mutableStateOf(start..end)
+        val maxStart = (totalDuration - 1f).coerceAtLeast(0f)
+        val rawStart = initialStartSeconds ?: 0f
+        val start = if (rawStart >= totalDuration || rawStart < 0f) 0f else rawStart.coerceIn(0f, maxStart)
+        val rawEnd = initialEndSeconds ?: (start + 15f)
+        val end = if (rawEnd <= start || rawEnd > totalDuration) minOf(start + 15f, totalDuration) else rawEnd
+        val finalEnd = end.coerceIn(start + 1f, totalDuration)
+        mutableStateOf(start..finalEnd)
     }
 
     var isSharingAudio by remember { mutableStateOf(false) }
@@ -209,12 +212,12 @@ fun AudioClipDialog(
         }
     }
 
-    LaunchedEffect(songId) {
+    LaunchedEffect(songId, initialSelectedLyrics) {
         withContext(Dispatchers.IO) {
             try {
                 val dbLyrics = database.lyrics(songId).firstOrNull()?.lyrics
-                if (!dbLyrics.isNullOrBlank()) {
-                    lyricsEntries = LyricsUtils.parseLyrics(dbLyrics)
+                val parsed = if (!dbLyrics.isNullOrBlank()) {
+                    LyricsUtils.parseLyrics(dbLyrics)
                 } else {
                     val entryPoint = EntryPointAccessors.fromApplication(
                         context.applicationContext,
@@ -232,7 +235,24 @@ fun AudioClipDialog(
                         database.query {
                             upsert(LyricsEntity(songId, fetched.lyrics, fetched.provider))
                         }
-                        lyricsEntries = LyricsUtils.parseLyrics(fetched.lyrics)
+                        LyricsUtils.parseLyrics(fetched.lyrics)
+                    } else emptyList()
+                }
+
+                if (parsed.isNotEmpty() && parsed.any { it.time in 0L until 1000000L }) {
+                    lyricsEntries = parsed
+                } else if (!initialSelectedLyrics.isNullOrBlank()) {
+                    // Fallback to selected plain lyrics lines
+                    val lines = initialSelectedLyrics.lines().filter { it.isNotBlank() }
+                    lyricsEntries = lines.mapIndexed { idx, text ->
+                        LyricsEntry(idx.toLong(), text)
+                    }
+                } else if (parsed.isNotEmpty()) {
+                    lyricsEntries = parsed
+                } else if (!dbLyrics.isNullOrBlank()) {
+                    val lines = dbLyrics.lines().filter { it.isNotBlank() }
+                    lyricsEntries = lines.mapIndexed { idx, text ->
+                        LyricsEntry(idx.toLong(), text)
                     }
                 }
             } catch (_: Exception) {}
@@ -300,9 +320,33 @@ fun AudioClipDialog(
         }
     }
 
-    val clipDurationLyrics = remember(displayedLyricsEntries, sliderRange) {
+    val clipDurationLyrics = remember(displayedLyricsEntries, sliderRange, initialSelectedLyrics) {
         val startMs = (sliderRange.start * 1000).toLong()
         val endMs = (sliderRange.endInclusive * 1000).toLong()
+        val durationMs = (endMs - startMs).coerceAtLeast(1000L)
+
+        val hasSyncedTimestamps = displayedLyricsEntries.isNotEmpty() && displayedLyricsEntries.any { it.time in 0L until 1000000L }
+
+        if (!hasSyncedTimestamps && !initialSelectedLyrics.isNullOrBlank()) {
+            val lines = initialSelectedLyrics.lines().filter { it.isNotBlank() }
+            if (lines.isNotEmpty()) {
+                val lineDuration = durationMs / lines.size
+                return@remember lines.mapIndexed { i, text ->
+                    LyricsEntry(startMs + (i * lineDuration), text)
+                }
+            }
+        }
+
+        if (!hasSyncedTimestamps && displayedLyricsEntries.isNotEmpty()) {
+            val nonBlank = displayedLyricsEntries.filter { it.text.isNotBlank() }
+            if (nonBlank.isNotEmpty()) {
+                val lineDuration = durationMs / nonBlank.size
+                return@remember nonBlank.mapIndexed { i, entry ->
+                    entry.copy(time = startMs + (i * lineDuration))
+                }
+            }
+        }
+
         val nonBlank = displayedLyricsEntries.filter { it.text.isNotBlank() }
         val activeAtStart = nonBlank.indexOfLast { it.time <= startMs }
         val filtered = nonBlank.filterIndexed { index, line ->

@@ -1782,7 +1782,9 @@ fun OriginalLyrics(
                                     val lastLine = selectedLines.lastOrNull()
                                     val lastIdx = sortedIndices.lastOrNull() ?: 0
 
-                                    val startMs: Long = if (firstLine != null && firstLine.time > 0L) {
+                                    val isSynced = firstLine != null && firstLine.time > 0L && firstLine.time < 1000000L
+
+                                    val startMs: Long = if (isSynced && firstLine != null) {
                                         val firstWordStart = firstLine.words?.firstOrNull()?.startTime
                                         if (firstWordStart != null && firstWordStart > 0.0) {
                                             (firstWordStart * 1000).toLong()
@@ -1793,22 +1795,22 @@ fun OriginalLyrics(
                                         0L
                                     }
 
-                                    val endMs: Long = if (lastLine != null && lastLine.time > 0L) {
+                                    val endMs: Long = if (isSynced && lastLine != null) {
                                         val nextLine = lines.getOrNull(lastIdx + 1)
                                         val lastWordEnd = lastLine.words?.lastOrNull()?.endTime
                                         if (lastWordEnd != null && lastWordEnd > 0.0) {
                                             (lastWordEnd * 1000).toLong()
-                                        } else if (nextLine != null && nextLine.time > lastLine.time) {
+                                        } else if (nextLine != null && nextLine.time > lastLine.time && nextLine.time < 1000000L) {
                                             nextLine.time
                                         } else {
                                             lastLine.time + 5000L
                                         }
                                     } else {
-                                        startMs + 15000L
+                                        15000L
                                     }
 
-                                    val startSec = (startMs / 1000f).coerceAtLeast(0f)
-                                    val endSec = (endMs / 1000f).coerceAtLeast(startSec + 3f)
+                                    val startSec = if (isSynced) (startMs / 1000f).coerceAtLeast(0f) else null
+                                    val endSec = if (isSynced) (endMs / 1000f).coerceAtLeast((startSec ?: 0f) + 3f) else null
                                     selectedLyricsStartSec = startSec
                                     selectedLyricsEndSec = endSec
 

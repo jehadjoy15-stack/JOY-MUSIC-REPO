@@ -78,7 +78,9 @@ object VideoClipGenerator {
         onProgress: ((Float) -> Unit)? = null,
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
-            require(endMs > startMs) { "End time must be greater than start time" }
+            val safeStartMs = startMs.coerceAtLeast(0L)
+            val safeEndMs = if (endMs <= safeStartMs) safeStartMs + 15000L else endMs
+            require(safeEndMs > safeStartMs) { "End time must be greater than start time" }
 
             onProgress?.invoke(0.05f)
 
@@ -106,8 +108,8 @@ object VideoClipGenerator {
             val isAacReady = AudioTrimmer.trimAndTranscodeToAac(
                 sourceFile = sourceFile,
                 outputAacFile = aacFile,
-                startMs = startMs,
-                endMs = endMs,
+                startMs = safeStartMs,
+                endMs = safeEndMs,
             )
 
             val finalAudioFile = if (isAacReady && aacFile.exists() && aacFile.length() > 1000L) {
@@ -119,8 +121,8 @@ object VideoClipGenerator {
                     songId = songId,
                     title = title,
                     artist = artist,
-                    startMs = startMs,
-                    endMs = endMs,
+                    startMs = safeStartMs,
+                    endMs = safeEndMs,
                     downloadCache = downloadCache,
                     playerCache = playerCache,
                 )
@@ -192,7 +194,7 @@ object VideoClipGenerator {
             var muxerAudioTrackIndex = -1
             var isMuxerStarted = false
 
-            val durationMs = endMs - startMs
+            val durationMs = safeEndMs - safeStartMs
             val totalFrames = ((durationMs / 1000f) * FRAME_RATE).toInt().coerceAtLeast(1)
 
             val bufferInfo = MediaCodec.BufferInfo()
@@ -271,10 +273,21 @@ object VideoClipGenerator {
             }
             val roundedAppLogo = getRoundedCornerBitmap(appLogoBitmap, 40, 40, 10f)
 
-            val allNonBlankLyrics = lyricsEntries.filter { it.text.isNotBlank() }
-            val activeAtStartIdx = allNonBlankLyrics.indexOfLast { it.time <= startMs }
+            val rawNonBlankLyrics = lyricsEntries.filter { it.text.isNotBlank() }
+            val hasValidSyncedTimestamps = rawNonBlankLyrics.isNotEmpty() && rawNonBlankLyrics.any { it.time in safeStartMs..safeEndMs }
+            val allNonBlankLyrics = if (rawNonBlankLyrics.isNotEmpty() && !hasValidSyncedTimestamps) {
+                // Distribute plain/unsynced lyrics evenly across the selected video range
+                val lineDuration = durationMs.coerceAtLeast(1000L) / rawNonBlankLyrics.size
+                rawNonBlankLyrics.mapIndexed { i, entry ->
+                    entry.copy(time = safeStartMs + (i * lineDuration))
+                }
+            } else {
+                rawNonBlankLyrics
+            }
+
+            val activeAtStartIdx = allNonBlankLyrics.indexOfLast { it.time <= safeStartMs }
             val lyricLines = allNonBlankLyrics.filterIndexed { index, line ->
-                (index == activeAtStartIdx) || (line.time in startMs..endMs)
+                (index == activeAtStartIdx) || (line.time in safeStartMs..safeEndMs)
             }.ifEmpty { allNonBlankLyrics }
 
             // Reusable canvas and bitmap for frame rendering
@@ -285,7 +298,7 @@ object VideoClipGenerator {
                 // 6. Render Video Frames Loop
                 for (frameIndex in 0 until totalFrames) {
                     val ptsNs = (frameIndex * 1_000_000_000L) / FRAME_RATE
-                    val currentFrameTimeMs = startMs + ((frameIndex * 1000L) / FRAME_RATE)
+                    val currentFrameTimeMs = safeStartMs + ((frameIndex * 1000L) / FRAME_RATE)
 
                     // Draw Background based on selected style
                     when (backgroundStyle) {
