@@ -1228,12 +1228,19 @@ class ListenTogetherClient
 
                     MessageTypes.USER_LEFT -> {
                         val payload = codec.decodePayload(msgType, payloadBytes) as? UserLeftPayload ?: return
+                        val currentHostId = _roomState.value?.hostId
+                        val isHostLeaving = payload.userId == currentHostId
+
                         _roomState.value =
                             _roomState.value?.copy(
                                 users = _roomState.value!!.users.filter { it.userId != payload.userId },
                             )
                         log(LogLevel.INFO, "User left", payload.username)
                         emitEvent(ListenTogetherEvent.UserLeft(payload.userId, payload.username))
+
+                        if (isHostLeaving) {
+                            handleAutoHostTransfer(currentHostId)
+                        }
                     }
 
                     MessageTypes.HOST_CHANGED -> {
@@ -1566,6 +1573,9 @@ class ListenTogetherClient
 
                     MessageTypes.USER_DISCONNECTED -> {
                         val payload = codec.decodePayload(msgType, payloadBytes) as? UserDisconnectedPayload ?: return
+                        val currentHostId = _roomState.value?.hostId
+                        val isHostDisconnected = payload.userId == currentHostId
+
                         // Mark user as disconnected in the room state
                         _roomState.value =
                             _roomState.value?.copy(
@@ -1576,6 +1586,10 @@ class ListenTogetherClient
                             )
                         log(LogLevel.INFO, "User temporarily disconnected", payload.username)
                         emitEvent(ListenTogetherEvent.UserDisconnected(payload.userId, payload.username))
+
+                        if (isHostDisconnected) {
+                            handleAutoHostTransfer(currentHostId)
+                        }
                     }
 
                     else -> {
@@ -1585,6 +1599,72 @@ class ListenTogetherClient
             } catch (e: Exception) {
                 log(LogLevel.ERROR, "Error parsing message", e.message)
             }
+        }
+
+        /**
+         * Automatically transfers host/admin role to the next active user if the current host disconnects or leaves.
+         */
+        private fun handleAutoHostTransfer(previousHostId: String?) {
+            val state = _roomState.value ?: return
+            // Filter eligible remaining users: first connected user who is not the disconnected host
+            val eligibleUsers = state.users.filter { it.userId != previousHostId && it.isConnected }
+                .ifEmpty { state.users.filter { it.userId != previousHostId } }
+
+            val nextHost = eligibleUsers.firstOrNull() ?: run {
+                log(LogLevel.WARNING, "Auto-transfer host", "No eligible users remaining in room")
+                return
+            }
+
+            log(
+                LogLevel.INFO,
+                "Auto-transferring host",
+                "Host disconnected. Promoting ${nextHost.username} (${nextHost.userId}) to Host/Admin"
+            )
+
+            // Update room state with new host
+            _roomState.value = state.copy(
+                hostId = nextHost.userId,
+                users = state.users.map { user ->
+                    user.copy(isHost = user.userId == nextHost.userId)
+                }
+            )
+
+            val myUserId = _userId.value
+            val isLocalUserNewHost = myUserId == nextHost.userId
+
+            if (isLocalUserNewHost) {
+                _role.value = RoomRole.HOST
+                wasHost = true
+                savePersistedSession()
+                // Inform server about the host transfer
+                try {
+                    sendMessage(MessageTypes.TRANSFER_HOST, TransferHostPayload(nextHost.userId))
+                } catch (e: Exception) {
+                    log(LogLevel.WARNING, "Failed to send TRANSFER_HOST to server", e.message)
+                }
+                scope.launch(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.listen_together_you_are_now_host),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            } else {
+                if (_role.value == RoomRole.HOST) {
+                    _role.value = RoomRole.GUEST
+                    wasHost = false
+                    savePersistedSession()
+                }
+                scope.launch(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.listen_together_host_disconnected, nextHost.username),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+
+            emitEvent(ListenTogetherEvent.HostChanged(nextHost.userId, nextHost.username))
         }
 
         private fun sendMessage(
@@ -1677,6 +1757,20 @@ class ListenTogetherClient
          * Leave the current room
          */
         fun leaveRoom() {
+            // If we are host and there are other users, transfer host to next connected user before leaving
+            if (_role.value == RoomRole.HOST) {
+                val nextHost = _roomState.value?.users?.firstOrNull { it.userId != _userId.value && it.isConnected }
+                    ?: _roomState.value?.users?.firstOrNull { it.userId != _userId.value }
+                if (nextHost != null) {
+                    log(LogLevel.INFO, "Transferring host before leaving", "New host: ${nextHost.username}")
+                    try {
+                        sendMessage(MessageTypes.TRANSFER_HOST, TransferHostPayload(nextHost.userId))
+                    } catch (e: Exception) {
+                        log(LogLevel.ERROR, "Failed to transfer host on leave", e.message)
+                    }
+                }
+            }
+
             sendMessageNoPayload(MessageTypes.LEAVE_ROOM)
 
             // Clear session info on intentional leave

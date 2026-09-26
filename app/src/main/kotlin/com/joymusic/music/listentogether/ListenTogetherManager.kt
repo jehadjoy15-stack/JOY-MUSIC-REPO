@@ -639,21 +639,18 @@ class ListenTogetherManager
 
                 is ListenTogetherEvent.HostChanged -> {
                     Timber.tag(TAG).d("Host changed: new host is ${event.newHostName} (${event.newHostId})")
-                    val wasHost = isHost
                     val nowIsHost = event.newHostId == userId.value
 
-                    if (wasHost && !nowIsHost) {
+                    if (!nowIsHost && playerListenerRegistered) {
                         // Lost host role
                         Timber.tag(TAG).d("Local user lost host role")
                         stopQueueSyncObservation()
                         stopVolumeSyncObservation()
-                        if (playerListenerRegistered) {
-                            playerConnection?.player?.removeListener(playerListener)
-                            playerListenerRegistered = false
-                        }
+                        playerConnection?.player?.removeListener(playerListener)
+                        playerListenerRegistered = false
                         // Restore guest mute state since we're now a guest
                         updateGuestMuteState()
-                    } else if (!wasHost && nowIsHost) {
+                    } else if (nowIsHost && !playerListenerRegistered) {
                         // Gained host role
                         Timber.tag(TAG).d("Local user gained host role")
                         updateGuestMuteState() // This will restore mute state since we're now host
@@ -661,7 +658,7 @@ class ListenTogetherManager
                         // Register player listener
                         val connection = playerConnection
                         val player = connection?.player
-                        if (player != null && !playerListenerRegistered) {
+                        if (player != null) {
                             try {
                                 player.addListener(playerListener)
                                 playerListenerRegistered = true

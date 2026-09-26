@@ -1127,6 +1127,10 @@
     <string name="storage_permission_desc">Allow JOY MUSIC to access your device audio files to play local music.</string>
     <string name="grant_permission">Grant Permission</string>
     <string name="no_device_songs">No music files found on device</string>
+
+    <!-- Listen Together Auto Host Transfer -->
+    <string name="listen_together_host_disconnected">Host disconnected. %s is now the room admin</string>
+    <string name="listen_together_you_are_now_host">Host disconnected. You are now the room admin</string>
 </resources>
 
 
