@@ -352,11 +352,9 @@ class ListenTogetherManager
                 // Start/stop queue observation based on role
                 if (connection != null && isInRoom && isHost) {
                     startQueueSyncObservation()
-                    startHeartbeat()
                     startVolumeSyncObservation()
                 } else {
                     stopQueueSyncObservation()
-                    stopHeartbeat()
                     stopVolumeSyncObservation()
                 }
                 if (connection != null && oldConnection !== connection && isInRoom && (!isHost || oldConnection != null)) {
@@ -411,7 +409,6 @@ class ListenTogetherManager
                             if (connection != null) {
                                 Timber.tag(TAG).d("Role changed to HOST, starting sync services")
                                 startQueueSyncObservation()
-                                startHeartbeat()
                                 startVolumeSyncObservation()
                                 // Re-register listener if needed
                                 if (!playerListenerRegistered) {
@@ -426,7 +423,6 @@ class ListenTogetherManager
                         } else if (newRole != RoomRole.HOST && wasHost) {
                             Timber.tag(TAG).d("Role changed from HOST, stopping sync services")
                             stopQueueSyncObservation()
-                            stopHeartbeat()
                             stopVolumeSyncObservation()
                         }
                         updateGuestMuteState()
@@ -480,7 +476,6 @@ class ListenTogetherManager
                             }
                         }
                         startQueueSyncObservation()
-                        startHeartbeat()
                         startVolumeSyncObservation()
                     } catch (e: Exception) {
                         Timber.tag(TAG).e(e, "Error handling RoomCreated event")
@@ -708,7 +703,6 @@ class ListenTogetherManager
                 playerListenerRegistered = false
             }
             stopQueueSyncObservation()
-            stopHeartbeat()
             stopVolumeSyncObservation()
             cancelDriftCorrection()
             // Note: Don't clear shouldBlockPlaybackChanges callback - it checks isInRoom dynamically
@@ -2062,37 +2056,4 @@ class ListenTogetherManager
          * Get current session age
          */
         fun getSessionAge(): Long = client.getSessionAge()
-
-        // Heartbeat timer
-        private var heartbeatJob: Job? = null
-
-        private fun startHeartbeat() {
-            if (heartbeatJob?.isActive == true) return
-            heartbeatJob =
-                scope.launch {
-                    while (heartbeatJob?.isActive == true && isInRoom && isHost) {
-                        delay(10000L)
-                        if (isSyncing) continue
-                        playerConnection?.player?.let { player ->
-                            val currentTrackId = player.currentMediaItem?.mediaId
-                            if (player.playWhenReady && player.playbackState == Player.STATE_READY && currentTrackId != null && currentTrackId == lastSyncedTrackId) {
-                                val pos = player.currentPosition
-                                Timber.tag(TAG).d("Host heartbeat: sending PLAY at pos $pos track=$currentTrackId")
-                                client.sendPlaybackAction(
-                                    PlaybackActions.PLAY,
-                                    trackId = currentTrackId,
-                                    position = pos,
-                                )
-                            }
-                        }
-                    }
-                }
-            Timber.tag(TAG).d("Host heartbeat started (10s interval)")
-        }
-
-        private fun stopHeartbeat() {
-            heartbeatJob?.cancel()
-            heartbeatJob = null
-            Timber.tag(TAG).d("Host heartbeat stopped")
-        }
     }

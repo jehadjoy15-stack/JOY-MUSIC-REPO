@@ -60,6 +60,7 @@ object DiscordExternalAssets {
         }
         Timber.tag(TAG).d("resolve: cache miss for %s, resolving via Discord external-assets", targetUrl.take(60))
 
+        val appIdsToTry = listOf(appId, "973592186835107870", "1053744669524021278").distinct().filter { it.isNotBlank() }
         val endpointsToTry = listOf(
             "https://discord.com/api/v9/applications/%s/external-assets",
             "https://discord.com/api/v10/applications/%s/external-assets",
@@ -74,58 +75,62 @@ object DiscordExternalAssets {
         val jsonMedia = "application/json; charset=utf-8".toMediaType()
         val jsonPayload = JSONObject().put("urls", JSONArray().put(targetUrl)).toString()
 
-        for (endpoint in endpointsToTry) {
-            val url = endpoint.format(appId)
-            for (authHeader in authHeadersToTry) {
-                if (authHeader.isBlank()) continue
-                try {
-                    val req = Request.Builder()
-                        .url(url)
-                        .post(jsonPayload.toRequestBody(jsonMedia))
-                        .header("Authorization", authHeader)
-                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                        .build()
+        for (targetAppId in appIdsToTry) {
+            for (endpoint in endpointsToTry) {
+                val url = endpoint.format(targetAppId)
+                for (authHeader in authHeadersToTry) {
+                    if (authHeader.isBlank()) continue
+                    try {
+                        val req = Request.Builder()
+                            .url(url)
+                            .post(jsonPayload.toRequestBody(jsonMedia))
+                            .header("Authorization", authHeader)
+                            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                            .build()
 
-                    okHttpClient.newCall(req).execute().use { response ->
-                        val body = response.body?.string()
-                        if (response.isSuccessful && !body.isNullOrBlank()) {
-                            val rawId = try {
-                                val arr = JSONArray(body)
-                                if (arr.length() > 0) {
-                                    val obj = arr.getJSONObject(0)
-                                    obj.optString("external_asset_path").takeIf { it.isNotBlank() }
-                                        ?: obj.optString("id").takeIf { it.isNotBlank() }
-                                        ?: obj.optString("asset_id").takeIf { it.isNotBlank() }
-                                        ?: obj.optString("path").takeIf { it.isNotBlank() }
-                                } else null
-                            } catch (_: Exception) {
-                                try {
-                                    val obj = JSONObject(body)
-                                    obj.optString("external_asset_path").takeIf { it.isNotBlank() }
-                                        ?: obj.optString("id").takeIf { it.isNotBlank() }
-                                        ?: obj.optString("asset_id").takeIf { it.isNotBlank() }
-                                        ?: obj.optString("path").takeIf { it.isNotBlank() }
+                        okHttpClient.newCall(req).execute().use { response ->
+                            val body = response.body?.string()
+                            Timber.tag(TAG).d("external-assets (appId=%s, endpoint=%s): status=%d, body=%s",
+                                targetAppId, endpoint.substringAfter("api/"), response.code, body?.take(100))
+                            if (response.isSuccessful && !body.isNullOrBlank()) {
+                                val rawId = try {
+                                    val arr = JSONArray(body)
+                                    if (arr.length() > 0) {
+                                        val obj = arr.getJSONObject(0)
+                                        obj.optString("external_asset_path").takeIf { it.isNotBlank() }
+                                            ?: obj.optString("id").takeIf { it.isNotBlank() }
+                                            ?: obj.optString("asset_id").takeIf { it.isNotBlank() }
+                                            ?: obj.optString("path").takeIf { it.isNotBlank() }
+                                    } else null
                                 } catch (_: Exception) {
-                                    null
+                                    try {
+                                        val obj = JSONObject(body)
+                                        obj.optString("external_asset_path").takeIf { it.isNotBlank() }
+                                            ?: obj.optString("id").takeIf { it.isNotBlank() }
+                                            ?: obj.optString("asset_id").takeIf { it.isNotBlank() }
+                                            ?: obj.optString("path").takeIf { it.isNotBlank() }
+                                    } catch (_: Exception) {
+                                        null
+                                    }
                                 }
-                            }
 
-                            if (!rawId.isNullOrBlank()) {
-                                val result = when {
-                                    rawId.startsWith("mp:") -> rawId
-                                    rawId.startsWith("external/") -> "mp:$rawId"
-                                    rawId.startsWith("attachments/") -> "mp:$rawId"
-                                    else -> "mp:external/$rawId"
+                                if (!rawId.isNullOrBlank()) {
+                                    val result = when {
+                                        rawId.startsWith("mp:") -> rawId
+                                        rawId.startsWith("external/") -> "mp:$rawId"
+                                        rawId.startsWith("attachments/") -> "mp:$rawId"
+                                        else -> "mp:external/$rawId"
+                                    }
+                                    cache[targetUrl] = result
+                                    trimCache()
+                                    Timber.tag(TAG).i("external-assets: successfully resolved %s -> %s", targetUrl.take(60), result)
+                                    return result
                                 }
-                                cache[targetUrl] = result
-                                trimCache()
-                                Timber.tag(TAG).i("external-assets: resolved %s -> %s", targetUrl.take(60), result)
-                                return result
                             }
                         }
+                    } catch (e: Exception) {
+                        Timber.tag(TAG).w(e, "external-assets: error requesting %s", url)
                     }
-                } catch (e: Exception) {
-                    Timber.tag(TAG).w(e, "external-assets: error requesting %s", url)
                 }
             }
         }
