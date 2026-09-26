@@ -472,6 +472,7 @@ object VideoClipGenerator {
 
                                     canvas.save()
                                     canvas.scale(scale, scale, VIDEO_WIDTH / 2f, lineY - 8f)
+                                    val effectiveMaxWidth = ((VIDEO_WIDTH - 120f) / scale).coerceAtLeast(300f)
                                     drawKaraokeLyricText(
                                         canvas = canvas,
                                         line = line,
@@ -480,7 +481,7 @@ object VideoClipGenerator {
                                         centerY = lineY,
                                         isCenterActive = isCenterActive,
                                         alpha = alpha,
-                                        maxWidth = VIDEO_WIDTH - 80f,
+                                        maxWidth = effectiveMaxWidth,
                                     )
                                     canvas.restore()
                                 }
@@ -1249,8 +1250,63 @@ object VideoClipGenerator {
     }
 
     /**
+     * Splits text into multiple lines that fit within maxWidth.
+     * Handles normal word breaks and character-level fallback for extra long words.
+     */
+    private fun wrapTextToLines(
+        text: String,
+        paint: TextPaint,
+        maxWidth: Float,
+    ): List<String> {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return emptyList()
+
+        val words = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (words.isEmpty()) return emptyList()
+
+        val lines = mutableListOf<String>()
+        var currentLine = ""
+
+        for (word in words) {
+            val candidate = if (currentLine.isEmpty()) word else "$currentLine $word"
+            if (paint.measureText(candidate) <= maxWidth) {
+                currentLine = candidate
+            } else {
+                if (currentLine.isNotEmpty()) {
+                    lines.add(currentLine)
+                    currentLine = ""
+                }
+                if (paint.measureText(word) <= maxWidth) {
+                    currentLine = word
+                } else {
+                    // Character-level break for overly long single word
+                    var subWord = ""
+                    for (ch in word) {
+                        val nextSub = subWord + ch
+                        if (paint.measureText(nextSub) <= maxWidth) {
+                            subWord = nextSub
+                        } else {
+                            if (subWord.isNotEmpty()) {
+                                lines.add(subWord)
+                            }
+                            subWord = ch.toString()
+                        }
+                    }
+                    if (subWord.isNotEmpty()) {
+                        currentLine = subWord
+                    }
+                }
+            }
+        }
+        if (currentLine.isNotEmpty()) {
+            lines.add(currentLine)
+        }
+        return lines
+    }
+
+    /**
      * Draw text wrapped cleanly across lines when it exceeds maxWidth without cutting with '...' dots
-     * and strictly preventing word-in-word collisions or overlapping.
+     * and strictly preventing word-in-word collisions or overflowing screen boundaries.
      */
     private fun drawWrappedLyricText(
         canvas: Canvas,
@@ -1262,41 +1318,33 @@ object VideoClipGenerator {
     ) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
-        val textWidth = paint.measureText(trimmed)
-        if (textWidth <= maxWidth) {
-            canvas.drawText(trimmed, centerX, centerY, paint)
+
+        // Adaptive font sizing based on length
+        val initialSize = paint.textSize
+        var adaptedSize = when {
+            trimmed.length > 70 -> initialSize * 0.76f
+            trimmed.length > 42 -> initialSize * 0.88f
+            else -> initialSize
+        }.coerceAtLeast(23f)
+
+        paint.textSize = adaptedSize
+        var lines = wrapTextToLines(trimmed, paint, maxWidth)
+
+        // If wrapping still results in > 2 lines, shrink slightly more
+        if (lines.size > 2 && adaptedSize > 24f) {
+            adaptedSize = (adaptedSize * 0.88f).coerceAtLeast(22f)
+            paint.textSize = adaptedSize
+            lines = wrapTextToLines(trimmed, paint, maxWidth)
+        }
+
+        if (lines.isEmpty()) return
+        if (lines.size == 1) {
+            canvas.drawText(lines[0], centerX, centerY, paint)
         } else {
-            val words = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }
-            if (words.isEmpty()) return
-
-            var line1 = ""
-            var line2 = ""
-            var current = ""
-            for (word in words) {
-                val candidate = if (current.isEmpty()) word else "$current $word"
-                if (paint.measureText(candidate) <= maxWidth || line1.isEmpty()) {
-                    current = candidate
-                } else {
-                    if (line1.isEmpty()) {
-                        line1 = current
-                        current = word
-                    } else {
-                        current = candidate
-                    }
-                }
-            }
-            if (line1.isEmpty()) {
-                line1 = current
-            } else {
-                line2 = current
-            }
-
-            if (line2.isEmpty()) {
-                canvas.drawText(line1, centerX, centerY, paint)
-            } else {
-                val subLineSpacing = paint.textSize * 1.34f
-                canvas.drawText(line1, centerX, centerY - (subLineSpacing * 0.52f), paint)
-                canvas.drawText(line2, centerX, centerY + (subLineSpacing * 0.52f), paint)
+            val subLineSpacing = paint.textSize * 1.32f
+            val startY = centerY - ((lines.size - 1) * subLineSpacing / 2f)
+            lines.forEachIndexed { idx, lineStr ->
+                canvas.drawText(lineStr, centerX, startY + (idx * subLineSpacing), paint)
             }
         }
     }
@@ -1345,10 +1393,18 @@ object VideoClipGenerator {
             return
         }
 
+        // Adaptive base font size based on text length and word count
+        val totalChars = words.sumOf { it.text.length }
+        val baseFontSize = when {
+            totalChars > 65 || words.size > 14 -> 24f
+            totalChars > 40 || words.size > 8 -> 28f
+            else -> 33f
+        }
+
         // Word-level karaoke rendering
         val dimPaint = TextPaint().apply {
             color = Color.argb((alpha * 95).toInt(), 255, 255, 255)
-            textSize = 33f
+            textSize = baseFontSize
             typeface = Typeface.create(
                 Typeface.DEFAULT,
                 if (isCenterActive) Typeface.BOLD else Typeface.NORMAL
@@ -1359,7 +1415,7 @@ object VideoClipGenerator {
 
         val activePaint = TextPaint().apply {
             color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
-            textSize = 33f
+            textSize = baseFontSize
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
             // Radiant glow around sung words (warm white / luminous halo)
@@ -1386,7 +1442,7 @@ object VideoClipGenerator {
         }
 
         val numLines = linesOfWords.size
-        val lineHeight = dimPaint.textSize * 1.34f
+        val lineHeight = baseFontSize * 1.32f
         val startY = if (numLines <= 1) centerY else centerY - ((numLines - 1) * lineHeight / 2f)
 
         linesOfWords.forEachIndexed { lineIdx, wordList ->
@@ -1445,7 +1501,7 @@ object VideoClipGenerator {
                     )
 
                     val sweepPaint = TextPaint().apply {
-                        textSize = 33f
+                        textSize = baseFontSize
                         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                         isAntiAlias = true
                         shader = sweepShader
