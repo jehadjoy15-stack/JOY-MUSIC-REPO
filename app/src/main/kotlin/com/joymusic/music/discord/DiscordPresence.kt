@@ -108,23 +108,21 @@ object DiscordPresence {
         }
 
         // Include assets block when image paths are available.
-        // Accepts mp:external/<hash>, attachments/, direct http(s) URLs, or Discord CDN keys.
+        // Accepts mp:external/<hash>, external/<hash>, attachments/, or Discord CDN keys.
         val validLarge = activity.largeImage?.takeIf {
             it.isNotBlank() && (
                 it.startsWith("mp:") ||
-                it.startsWith("http://") ||
-                it.startsWith("https://") ||
                 it.startsWith("external/") ||
-                it.startsWith("attachments/")
+                it.startsWith("attachments/") ||
+                (!it.startsWith("http://") && !it.startsWith("https://") && !it.contains("/"))
             )
         }
         val validSmall = activity.smallImage?.takeIf {
             it.isNotBlank() && (
                 it.startsWith("mp:") ||
-                it.startsWith("http://") ||
-                it.startsWith("https://") ||
                 it.startsWith("external/") ||
-                it.startsWith("attachments/")
+                it.startsWith("attachments/") ||
+                (!it.startsWith("http://") && !it.startsWith("https://") && !it.contains("/"))
             )
         }
 

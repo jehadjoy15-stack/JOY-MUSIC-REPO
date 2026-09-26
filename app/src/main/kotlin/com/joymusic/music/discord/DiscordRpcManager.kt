@@ -402,13 +402,13 @@ object DiscordRpcManager {
             }
         }
         val initialLargeResolved = if (!activity.largeImage.isNullOrEmpty()) {
-            val img = activity.largeImage!!
-            DiscordExternalAssets.getCached(img) ?: img
+            val img = activity.largeImage
+            DiscordExternalAssets.getCached(img)
         } else null
 
         val initialSmallResolved = if (!activity.smallImage.isNullOrEmpty()) {
-            val img = activity.smallImage!!
-            DiscordExternalAssets.getCached(img) ?: img
+            val img = activity.smallImage
+            DiscordExternalAssets.getCached(img)
         } else null
 
         val initialPayload = DiscordPresence.buildActivity(
@@ -447,19 +447,21 @@ object DiscordRpcManager {
         val currentToken = accessToken
         val largeImageUrl = activity.largeImage
         val smallImageUrl = activity.smallImage
-        if (currentToken != null && initialLargeResolved?.startsWith("mp:") != true && (!largeImageUrl.isNullOrEmpty() || !smallImageUrl.isNullOrEmpty())) {
+        val needsResolution = (initialLargeResolved == null && !largeImageUrl.isNullOrEmpty()) ||
+                (initialSmallResolved == null && !smallImageUrl.isNullOrEmpty())
+        if (currentToken != null && needsResolution) {
             val activityIdAtLaunch = currentActivityId.get()
             val songIdAtLaunch = songId
 
             imageResolutionJob?.cancel()
             imageResolutionJob = scope.launch {
                 val largeResolved = if (!largeImageUrl.isNullOrEmpty()) {
-                    if (largeImageUrl.startsWith("mp:")) largeImageUrl
+                    if (largeImageUrl.startsWith("mp:") || largeImageUrl.startsWith("external/")) largeImageUrl
                     else DiscordExternalAssets.resolve(largeImageUrl, appId, currentToken)
                 } else null
 
                 val smallResolved = if (!smallImageUrl.isNullOrEmpty()) {
-                    if (smallImageUrl.startsWith("mp:")) smallImageUrl
+                    if (smallImageUrl.startsWith("mp:") || smallImageUrl.startsWith("external/")) smallImageUrl
                     else DiscordExternalAssets.resolve(smallImageUrl, appId, currentToken)
                 } else null
 

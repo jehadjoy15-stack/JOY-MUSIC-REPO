@@ -14,11 +14,6 @@ import java.util.concurrent.TimeUnit
 object DiscordExternalAssets {
 
     private const val TAG = "DiscordSvc"
-    private const val PROXY_WORKER_URL =
-        "https://metrolist-discord-rpc-api.fullerbread2032.workers.dev/image"
-    private const val EXTERNAL_ASSETS_API =
-        "https://discord.com/api/v10/applications/%s/external-assets"
-
     private val cache = ConcurrentHashMap<String, String>()
     private const val CACHE_MAX_SIZE = 128
 
@@ -31,13 +26,18 @@ object DiscordExternalAssets {
 
     fun getCached(imageUrl: String): String? {
         if (imageUrl.isBlank()) return null
-        if (imageUrl.startsWith("mp:")) return imageUrl
+        if (imageUrl.startsWith("mp:") || imageUrl.startsWith("external/") || imageUrl.startsWith("attachments/")) return imageUrl
         val targetUrl = when {
             imageUrl.startsWith("//") -> "https:$imageUrl"
             !imageUrl.startsWith("http://") && !imageUrl.startsWith("https://") -> "https://$imageUrl"
             else -> imageUrl
         }
-        return cache[targetUrl]
+        val cached = cache[targetUrl]
+        return if (cached != null && (cached.startsWith("mp:") || cached.startsWith("external/") || cached.startsWith("attachments/"))) {
+            cached
+        } else {
+            null
+        }
     }
 
     fun resolve(
@@ -46,7 +46,7 @@ object DiscordExternalAssets {
         token: String,
     ): String? {
         if (imageUrl.isBlank()) return null
-        if (imageUrl.startsWith("mp:")) return imageUrl
+        if (imageUrl.startsWith("mp:") || imageUrl.startsWith("external/") || imageUrl.startsWith("attachments/")) return imageUrl
 
         val targetUrl = when {
             imageUrl.startsWith("//") -> "https:$imageUrl"
@@ -54,43 +54,17 @@ object DiscordExternalAssets {
             else -> imageUrl
         }
 
-        cache[targetUrl]?.let {
+        getCached(targetUrl)?.let {
             Timber.tag(TAG).d("resolve: cache hit for %s -> %s", targetUrl.take(60), it)
             return it
         }
-        Timber.tag(TAG).d("resolve: cache miss for %s, resolving via worker proxy", targetUrl.take(60))
+        Timber.tag(TAG).d("resolve: cache miss for %s, resolving via Discord external-assets", targetUrl.take(60))
 
-        // 1. Primary: Kizzy Cloudflare RPC worker proxy (fast & 100% stable)
-        try {
-            val encodedUrl = URLEncoder.encode(targetUrl, "UTF-8")
-            val req = Request.Builder()
-                .url("$PROXY_WORKER_URL?url=$encodedUrl")
-                .get()
-                .build()
+        val endpointsToTry = listOf(
+            "https://discord.com/api/v9/applications/%s/external-assets",
+            "https://discord.com/api/v10/applications/%s/external-assets",
+        )
 
-            okHttpClient.newCall(req).execute().use { response ->
-                val body = response.body?.string()
-                if (response.isSuccessful && !body.isNullOrBlank()) {
-                    val json = JSONObject(body)
-                    val rawId = if (json.has("id")) json.getString("id") else null
-                    if (!rawId.isNullOrBlank()) {
-                        val result = when {
-                            rawId.startsWith("mp:") -> rawId
-                            rawId.startsWith("external/") -> "mp:$rawId"
-                            else -> "mp:external/$rawId"
-                        }
-                        cache[targetUrl] = result
-                        trimCache()
-                        Timber.tag(TAG).i("external-assets (worker): resolved %s -> %s", targetUrl.take(60), result)
-                        return result
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "external-assets: worker proxy error for %s", targetUrl.take(60))
-        }
-
-        // 2. Fallback: Discord API directly
         val authHeadersToTry = if (token.startsWith("Bearer ") || token.startsWith("Bot ")) {
             listOf(token)
         } else {
@@ -100,48 +74,64 @@ object DiscordExternalAssets {
         val jsonMedia = "application/json; charset=utf-8".toMediaType()
         val jsonPayload = JSONObject().put("urls", JSONArray().put(targetUrl)).toString()
 
-        for (authHeader in authHeadersToTry) {
-            if (authHeader.isBlank()) continue
-            try {
-                val req = Request.Builder()
-                    .url(EXTERNAL_ASSETS_API.format(appId))
-                    .post(jsonPayload.toRequestBody(jsonMedia))
-                    .header("Authorization", authHeader)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-                    .build()
+        for (endpoint in endpointsToTry) {
+            val url = endpoint.format(appId)
+            for (authHeader in authHeadersToTry) {
+                if (authHeader.isBlank()) continue
+                try {
+                    val req = Request.Builder()
+                        .url(url)
+                        .post(jsonPayload.toRequestBody(jsonMedia))
+                        .header("Authorization", authHeader)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        .build()
 
-                okHttpClient.newCall(req).execute().use { response ->
-                    val body = response.body?.string()
-                    if (response.isSuccessful && !body.isNullOrBlank()) {
-                        val rawId = try {
-                            val arr = JSONArray(body)
-                            if (arr.length() > 0) arr.getJSONObject(0).optString("id") else null
-                        } catch (_: Exception) {
-                            JSONObject(body).optString("id")
-                        }
-                        if (!rawId.isNullOrBlank()) {
-                            val result = when {
-                                rawId.startsWith("mp:") -> rawId
-                                rawId.startsWith("external/") -> "mp:$rawId"
-                                else -> "mp:external/$rawId"
+                    okHttpClient.newCall(req).execute().use { response ->
+                        val body = response.body?.string()
+                        if (response.isSuccessful && !body.isNullOrBlank()) {
+                            val rawId = try {
+                                val arr = JSONArray(body)
+                                if (arr.length() > 0) {
+                                    val obj = arr.getJSONObject(0)
+                                    obj.optString("external_asset_path").takeIf { it.isNotBlank() }
+                                        ?: obj.optString("id").takeIf { it.isNotBlank() }
+                                        ?: obj.optString("asset_id").takeIf { it.isNotBlank() }
+                                        ?: obj.optString("path").takeIf { it.isNotBlank() }
+                                } else null
+                            } catch (_: Exception) {
+                                try {
+                                    val obj = JSONObject(body)
+                                    obj.optString("external_asset_path").takeIf { it.isNotBlank() }
+                                        ?: obj.optString("id").takeIf { it.isNotBlank() }
+                                        ?: obj.optString("asset_id").takeIf { it.isNotBlank() }
+                                        ?: obj.optString("path").takeIf { it.isNotBlank() }
+                                } catch (_: Exception) {
+                                    null
+                                }
                             }
-                            cache[targetUrl] = result
-                            trimCache()
-                            Timber.tag(TAG).i("external-assets (direct): resolved %s -> %s", targetUrl.take(60), result)
-                            return result
+
+                            if (!rawId.isNullOrBlank()) {
+                                val result = when {
+                                    rawId.startsWith("mp:") -> rawId
+                                    rawId.startsWith("external/") -> "mp:$rawId"
+                                    rawId.startsWith("attachments/") -> "mp:$rawId"
+                                    else -> "mp:external/$rawId"
+                                }
+                                cache[targetUrl] = result
+                                trimCache()
+                                Timber.tag(TAG).i("external-assets: resolved %s -> %s", targetUrl.take(60), result)
+                                return result
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w(e, "external-assets: error requesting %s", url)
                 }
-            } catch (e: Exception) {
-                Timber.tag(TAG).e(e, "external-assets: direct error for %s", targetUrl.take(60))
             }
         }
 
-        // 3. Fallback: Return original https URL directly (supported by Discord Gateway)
-        cache[targetUrl] = targetUrl
-        trimCache()
-        Timber.tag(TAG).i("external-assets: fallback to direct URL %s", targetUrl.take(60))
-        return targetUrl
+        Timber.tag(TAG).w("external-assets: could not resolve %s", targetUrl.take(60))
+        return null
     }
 
     private fun trimCache() {
