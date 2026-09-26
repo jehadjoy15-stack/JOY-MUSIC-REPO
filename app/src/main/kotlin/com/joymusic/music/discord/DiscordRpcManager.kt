@@ -403,14 +403,12 @@ object DiscordRpcManager {
         }
         val initialLargeResolved = if (!activity.largeImage.isNullOrEmpty()) {
             val img = activity.largeImage!!
-            if (img.startsWith("mp:")) img
-            else DiscordExternalAssets.getCached(img)
+            DiscordExternalAssets.getCached(img) ?: img
         } else null
 
         val initialSmallResolved = if (!activity.smallImage.isNullOrEmpty()) {
             val img = activity.smallImage!!
-            if (img.startsWith("mp:")) img
-            else DiscordExternalAssets.getCached(img)
+            DiscordExternalAssets.getCached(img) ?: img
         } else null
 
         val initialPayload = DiscordPresence.buildActivity(

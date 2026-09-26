@@ -108,10 +108,25 @@ object DiscordPresence {
         }
 
         // Include assets block when image paths are available.
-        // These should be resolved via POST /api/v9/applications/{id}/external-assets
-        // to get mp:external/<hash> references that Discord's Gateway accepts.
-        val validLarge = activity.largeImage?.takeIf { it.startsWith("mp:") || it.startsWith("external/") || it.startsWith("attachments/") }
-        val validSmall = activity.smallImage?.takeIf { it.startsWith("mp:") || it.startsWith("external/") || it.startsWith("attachments/") }
+        // Accepts mp:external/<hash>, attachments/, direct http(s) URLs, or Discord CDN keys.
+        val validLarge = activity.largeImage?.takeIf {
+            it.isNotBlank() && (
+                it.startsWith("mp:") ||
+                it.startsWith("http://") ||
+                it.startsWith("https://") ||
+                it.startsWith("external/") ||
+                it.startsWith("attachments/")
+            )
+        }
+        val validSmall = activity.smallImage?.takeIf {
+            it.isNotBlank() && (
+                it.startsWith("mp:") ||
+                it.startsWith("http://") ||
+                it.startsWith("https://") ||
+                it.startsWith("external/") ||
+                it.startsWith("attachments/")
+            )
+        }
 
         if (validLarge != null || validSmall != null || !activity.largeText.isNullOrEmpty() || !activity.smallText.isNullOrEmpty()) {
             val assets = JSONObject()

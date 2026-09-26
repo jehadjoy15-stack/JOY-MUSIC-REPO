@@ -137,7 +137,11 @@ object DiscordExternalAssets {
             }
         }
 
-        return null
+        // 3. Fallback: Return original https URL directly (supported by Discord Gateway)
+        cache[targetUrl] = targetUrl
+        trimCache()
+        Timber.tag(TAG).i("external-assets: fallback to direct URL %s", targetUrl.take(60))
+        return targetUrl
     }
 
     private fun trimCache() {
